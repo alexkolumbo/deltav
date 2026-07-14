@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+venv/
+
+# runtime artifacts
+*.wallet.json
+genesis.local.json
+chain-data/
+models/
+*.gguf
+.env
