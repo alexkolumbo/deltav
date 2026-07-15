@@ -497,6 +497,36 @@ class GatewayDaemon:
                     "items": [{key: v for key, v in it.items() if key != "vec"}
                               for it in items]}
 
+        @app.post("/v1/images/generations")
+        async def images_generations(body: dict, request: Request) -> dict:
+            """OpenAI-compatible text-to-image; routes to diffusion nodes."""
+            payer, record = await self._requester_from(request)
+            prompt = (body.get("prompt") or "").strip()
+            if not prompt:
+                raise HTTPException(400, "prompt required")
+            size = str(body.get("size", "512x512"))
+            try:
+                w, h = (int(x) for x in size.lower().split("x"))
+            except ValueError:
+                w, h = 512, 512
+            await self.router.refresh(self.node_urls)
+            await self._precheck_funds(record, prompt, w * h // 4096 + 64)
+            try:
+                result = await self.router.route_image(
+                    prompt, model=body.get("model", "auto"), width=w, height=h,
+                    seed=int(body.get("seed", 0)), requester=payer)
+            except RouteError as exc:
+                raise HTTPException(503, str(exc))
+            if record is not None:
+                units = w * h // 4096 + 64
+                self.keys.record_usage(record, units, units * self.params.price_per_token)
+            return {
+                "created": 0,
+                "data": [{"b64_json": img} for img in result.images],
+                "model": result.model_ref,
+                "deltav": {"node": result.node, "receipt_tx": result.receipt_tx},
+            }
+
         @app.post("/v1/embeddings")
         async def embeddings(body: dict, request: Request) -> dict:
             payer, record = await self._requester_from(request)

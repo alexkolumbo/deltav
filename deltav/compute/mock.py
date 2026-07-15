@@ -9,7 +9,18 @@ from __future__ import annotations
 import hashlib
 import re
 
-from .base import ComputeBackend, EmbedRequest, EmbedResult, InferRequest, InferResult, register_backend
+import base64
+
+from .base import (
+    ComputeBackend,
+    EmbedRequest,
+    EmbedResult,
+    ImageRequest,
+    ImageResult,
+    InferRequest,
+    InferResult,
+    register_backend,
+)
 
 # Scripted-reply marker: a prompt containing [[reply]]...[[/reply]] gets that
 # text back verbatim (still deterministic). Lets tests and demos drive
@@ -101,6 +112,21 @@ class MockBackend(ComputeBackend):
             model_ref=request.model_ref,
             backend=self.name,
         )
+
+    # Deterministic mock image generation: a PNG-ish blob derived purely
+    # from (model, prompt, size, seed), so diffusion receipts are
+    # spot-checkable without a real image model.
+    supports_vision = True
+    supports_image_gen = True
+
+    def generate_image(self, request: ImageRequest) -> ImageResult:
+        self.load(request.model_ref)
+        material = (f"{request.model_ref}|{request.prompt}|{request.width}x"
+                    f"{request.height}|{request.steps}|{request.seed}")
+        blob = hashlib.sha256(material.encode()).digest() * 4  # 128 bytes
+        b64 = base64.b64encode(b"MOCKPNG" + blob).decode()
+        return ImageResult(images=[b64], model_ref=request.model_ref,
+                           backend=self.name, seed=request.seed)
 
     def loaded_models(self) -> list[str]:
         return sorted(self._loaded)

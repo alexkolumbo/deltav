@@ -25,7 +25,14 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from ..chain import Blockchain, Mempool, Tx, TxType
 from ..chain.block import Block
 from ..chain.consensus import ConsensusError, expected_proposer
-from ..compute import DeviceInfo, EmbedRequest, InferRequest, detect_device, make_backend
+from ..compute import (
+    DeviceInfo,
+    EmbedRequest,
+    ImageRequest,
+    InferRequest,
+    detect_device,
+    make_backend,
+)
 from ..config import Genesis
 from ..crypto import KeyPair, canonical_json, sha256_hex
 from .verify import spot_check_verdict
@@ -322,6 +329,10 @@ class NodeDaemon:
         async def embed(body: dict):
             return await self._handle_embed(body)
 
+        @app.post("/image")
+        async def image(body: dict):
+            return await self._handle_image(body)
+
         return app
 
     def _check_price(self, body: dict, expected_tokens: int) -> None:
@@ -450,6 +461,52 @@ class NodeDaemon:
             "node": self.address,
             "backend": self.backend.name,
         }
+
+    async def _handle_image(self, body: dict) -> dict:
+        for key in ("prompt", "model", "requester", "requester_pubkey", "requester_sig", "price_limit"):
+            if key not in body:
+                raise HTTPException(400, f"missing field {key!r}")
+        if not self.backend.supports_image_gen:
+            raise HTTPException(501, f"backend {self.backend.name} has no image generation")
+        self._check_model(str(body.get("model", "")))
+        model_ref = body["model"]
+        width, height = int(body.get("width", 512)), int(body.get("height", 512))
+        steps, seed = int(body.get("steps", 20)), int(body.get("seed", 0))
+        # Price by megapixel-ish units, same signed-limit machinery as text.
+        self._check_price(body, width * height // 4096 + 64)
+
+        request_hash = sha256_hex(canonical_json(
+            {"prompt": body["prompt"], "model": model_ref, "w": width, "h": height,
+             "steps": steps, "seed": seed}))
+        req = ImageRequest(prompt=body["prompt"], model_ref=model_ref, width=width,
+                           height=height, steps=steps, seed=seed)
+        self.active_jobs += 1
+        try:
+            async with self._job_sem:
+                result = await asyncio.to_thread(self.backend.generate_image, req)
+        except Exception as exc:
+            raise HTTPException(500, f"image generation failed: {exc}")
+        finally:
+            self.active_jobs -= 1
+
+        output_hash = sha256_hex(canonical_json(result.images))
+        units = width * height // 4096 + 64
+        self.jobs[request_hash] = {
+            "type": "image", "prompt": body["prompt"], "model": model_ref,
+            "width": width, "height": height, "steps": steps, "seed": seed,
+            "output_hash": output_hash,
+        }
+        receipt = self._make_tx(TxType.INFERENCE_RECEIPT, {
+            "requester": body["requester"], "requester_pubkey": body["requester_pubkey"],
+            "requester_sig": body["requester_sig"], "request_hash": request_hash,
+            "output_hash": output_hash, "model": model_ref, "seed": seed,
+            "tokens_in": units, "tokens_out": 1, "price_limit": int(body["price_limit"]),
+            "deterministic": result.deterministic and self.backend.deterministic,
+        })
+        await self.submit_tx(receipt)
+        return {"images": result.images, "output_hash": output_hash,
+                "request_hash": request_hash, "receipt_tx": receipt.hash,
+                "node": self.address, "backend": self.backend.name}
 
     async def _infer_stream_events(self, body: dict):
         """SSE token stream. The receipt is submitted after the last token —
@@ -760,6 +817,24 @@ class NodeDaemon:
                 recomputed_output_hash=sha256_hex(canonical_json(rounded)),
                 receipt_tokens_out=receipt.tokens_out,
                 recomputed_tokens_out=len(result.vectors),
+            )
+
+        if job.get("type") == "image":
+            if not self.backend.supports_image_gen:
+                return None
+            try:
+                result = await asyncio.to_thread(self.backend.generate_image, ImageRequest(
+                    prompt=job["prompt"], model_ref=job["model"], width=int(job["width"]),
+                    height=int(job["height"]), steps=int(job["steps"]), seed=int(job["seed"])))
+            except Exception:
+                return None
+            return spot_check_verdict(
+                receipt_deterministic=receipt.deterministic,
+                checker_deterministic=self.backend.deterministic,
+                receipt_output_hash=receipt.output_hash,
+                recomputed_output_hash=sha256_hex(canonical_json(result.images)),
+                receipt_tokens_out=receipt.tokens_out,
+                recomputed_tokens_out=1,
             )
 
         request = InferRequest(

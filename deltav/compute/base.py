@@ -46,6 +46,29 @@ class InferRequest:
     max_tokens: int = 256
     temperature: float = 0.0
     seed: int = 0
+    # Multimodal input: image references (data URIs or URLs) for vision
+    # models. Empty for plain text. Backends that ignore it stay text-only.
+    images: list = field(default_factory=list)
+
+
+@dataclass
+class ImageRequest:
+    """A text-to-image (diffusion) job."""
+    prompt: str
+    model_ref: str
+    width: int = 512
+    height: int = 512
+    steps: int = 20
+    seed: int = 0
+
+
+@dataclass
+class ImageResult:
+    images: list  # base64 PNG strings (or data descriptors)
+    model_ref: str
+    backend: str
+    seed: int
+    deterministic: bool = True
 
 
 @dataclass
@@ -112,12 +135,19 @@ class ComputeBackend(ABC):
             yield result.text
         yield result
 
-    # Whether this backend can serve embedding jobs.
+    # Extra job types this backend can serve (defaults off).
     supports_embeddings: bool = False
+    supports_vision: bool = False       # image input to a chat model
+    supports_image_gen: bool = False    # text -> image (diffusion)
 
     def embed(self, request: EmbedRequest) -> EmbedResult:
         """Embed a batch of texts in one pass (native batching)."""
         raise NotImplementedError(f"backend {self.name} does not support embeddings")
+
+    def generate_image(self, request: "ImageRequest") -> "ImageResult":
+        """Text-to-image generation (diffusion). Implement for engines like
+        stable-diffusion.cpp; report supports_image_gen=True."""
+        raise NotImplementedError(f"backend {self.name} does not generate images")
 
     def unload(self, model_ref: str | None = None) -> None:  # noqa: B027 - optional hook
         """Free memory; default no-op."""

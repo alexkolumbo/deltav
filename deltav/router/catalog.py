@@ -25,7 +25,8 @@ class ModelSpec:
     file_mb: int            # size of the GGUF file
     quality: float          # rough capability score 0..1 for auto-routing
     ctx: int = 4096         # default SERVING context (planning may raise it)
-    kind: str = "chat"      # "chat" | "embedding"
+    kind: str = "chat"      # "chat" | "embedding" | "image" (diffusion)
+    vision: bool = False    # chat model that also accepts image input
     # Architecture facts for exact KV-cache math (0 = unknown -> heuristic).
     n_layers: int = 0
     n_kv_heads: int = 0
@@ -141,6 +142,20 @@ CURATED_CATALOG: list[ModelSpec] = [
     ModelSpec("bartowski/gemma-2-27b-it-GGUF", "gemma-2-27b-it-Q4_K_M.gguf",
               "gemma2", 27.2, "Q4_K_M", 16600, 0.89,
               n_layers=46, n_kv_heads=16, head_dim=128, max_ctx=8192),
+    # xAI's open Grok weights (big — for powerful nodes; still open, still
+    # llama.cpp-servable once converted to GGUF).
+    ModelSpec("xai-org/grok-1-GGUF", "grok-1-Q4_K_M.gguf",
+              "grok", 314.0, "Q4_K_M", 170000, 0.92,
+              n_layers=64, n_kv_heads=8, head_dim=128, max_ctx=8192),
+    # --- multimodal (vision: image input) ---
+    ModelSpec("bartowski/Qwen2.5-VL-7B-Instruct-GGUF", "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+              "qwen2.5-vl", 8.3, "Q4_K_M", 5300, 0.77, vision=True,
+              n_layers=28, n_kv_heads=4, head_dim=128, max_ctx=32768),
+    # --- diffusion (text -> image), served via stable-diffusion.cpp (GGUF) ---
+    ModelSpec("second-state/stable-diffusion-v1-5-GGUF", "stable-diffusion-v1-5-Q4_0.gguf",
+              "sd", 0.98, "Q4_0", 1700, 0.60, kind="image", max_ctx=0),
+    ModelSpec("second-state/FLUX.1-schnell-GGUF", "flux1-schnell-Q4_0.gguf",
+              "flux", 12.0, "Q4_0", 6800, 0.80, kind="image", max_ctx=0),
     # Embedding models (routed by kind, never picked for chat).
     ModelSpec("nomic-ai/nomic-embed-text-v1.5-GGUF", "nomic-embed-text-v1.5.Q4_K_M.gguf",
               "nomic", 0.14, "Q4_K_M", 84, 0.60, ctx=2048, kind="embedding",
@@ -173,6 +188,10 @@ class Catalog:
 
     def embedding_specs(self) -> list[ModelSpec]:
         return sorted((s for s in self.specs if s.kind == "embedding"),
+                      key=lambda s: -s.quality)
+
+    def image_specs(self) -> list[ModelSpec]:
+        return sorted((s for s in self.specs if s.kind == "image"),
                       key=lambda s: -s.quality)
 
     def refresh_from_hf(self, limit: int = 30) -> int:

@@ -49,6 +49,15 @@ class EmbedRouteResult:
     attempts: int
 
 
+@dataclass
+class ImageRouteResult:
+    images: list
+    model_ref: str
+    node: str
+    receipt_tx: str | None
+    attempts: int
+
+
 def request_hash_for(prompt: str, model_ref: str, max_tokens: int, seed: int) -> str:
     return sha256_hex(canonical_json(
         {"prompt": prompt, "model": model_ref, "max_tokens": max_tokens, "seed": seed}
@@ -342,4 +351,58 @@ class SmartRouter:
                 receipt_tx=data.get("receipt_tx"),
                 attempts=attempt,
             )
+        raise RouteError("all candidate nodes failed: " + "; ".join(errors))
+
+    # -------------------------------------------------------------- images
+    def resolve_image_model(self, model: str = "auto") -> ModelSpec:
+        live = [n for n in self.nodes if n.alive and n.active]
+        if not live:
+            raise RouteError("no live nodes on the network")
+        if model in ("auto", "", None):
+            for spec in self.catalog.image_specs():
+                if any(spec.ref in n.models or spec.repo_id in n.models for n in live):
+                    return spec
+            raise RouteError("no image model is served by any live node")
+        spec = self.catalog.by_ref(model)
+        if spec is not None and spec.kind == "image":
+            return spec
+        if any(model in n.models for n in live):
+            repo, _, filename = model.partition("::")
+            return ModelSpec(repo_id=repo, filename=filename, family="external",
+                             params_b=0.0, quant="api", file_mb=0, quality=0.5, kind="image")
+        raise RouteError(f"no image model {model!r} on the network")
+
+    async def route_image(self, prompt: str, model: str = "auto", width: int = 512,
+                          height: int = 512, steps: int = 20, seed: int = 0,
+                          requester: KeyPair | None = None) -> ImageRouteResult:
+        payer = requester or self.requester
+        spec = self.resolve_image_model(model)
+        candidates = [n for n in self.nodes
+                      if spec.ref in n.models or spec.repo_id in n.models]
+        candidates.sort(key=lambda n: score_node(n, spec.ref, self.chain_height,
+                                                 self.price_per_token), reverse=True)
+        if not candidates:
+            raise RouteError(f"no node serves {spec.ref}")
+        errors: list[str] = []
+        for attempt, node in enumerate(candidates, start=1):
+            req_hash = sha256_hex(canonical_json(
+                {"prompt": prompt, "model": spec.ref, "w": width, "h": height,
+                 "steps": steps, "seed": seed}))
+            price_limit = (width * height // 4096 + 64) * self.price_per_token * 4
+            auth = payer.sign(receipt_auth_bytes(req_hash, node.address, spec.ref, price_limit))
+            body = {"prompt": prompt, "model": spec.ref, "width": width, "height": height,
+                    "steps": steps, "seed": seed, "requester": payer.address,
+                    "requester_pubkey": payer.public_hex, "requester_sig": auth,
+                    "price_limit": price_limit}
+            try:
+                resp = await self.client.post(f"{node.endpoint}/image", json=body, timeout=300.0)
+                resp.raise_for_status()
+                data = resp.json()
+            except httpx.HTTPError as exc:
+                errors.append(f"{node.address[:12]}: {exc}")
+                node.alive = False
+                continue
+            return ImageRouteResult(images=data["images"], model_ref=spec.ref,
+                                    node=node.address, receipt_tx=data.get("receipt_tx"),
+                                    attempts=attempt)
         raise RouteError("all candidate nodes failed: " + "; ".join(errors))

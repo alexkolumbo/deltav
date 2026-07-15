@@ -1,5 +1,7 @@
 # Delta V — decentralized AI network
 
+**English** · [Русский](README.ru.md)
+
 A lightweight proof-of-stake blockchain + a network of GPU nodes +
 smart routing of open-source models from
 [HuggingFace](https://huggingface.co/models). A user sends a request to
@@ -19,11 +21,13 @@ client ──► gateway (/v1/chat/completions · /api/chat · /v1/messages)
 ```
 
 Vendor-agnostic by design: the same GGUF runs on **AMD, NVIDIA, Intel,
-Apple or CPU** via llama.cpp (Vulkan needs no CUDA/ROCm). The API *shape*
-is just a translation layer — it is independent of the model. Because we
-serve open models, the network speaks the surfaces that ecosystem
-expects: **OpenAI** (the de-facto standard), **Ollama** (local-model
-tools), and **Anthropic** (a bridge for Claude-native agents).
+Apple or CPU** via llama.cpp (Vulkan needs no CUDA/ROCm). Only
+**non-proprietary** models are served — Qwen, Llama, Gemma, Mistral,
+DeepSeek, xAI's open Grok weights, or your own. The API *shape* is a
+translation layer, independent of the model; the network speaks the
+surfaces the open ecosystem uses: **OpenAI** (the de-facto standard —
+Hermes, grok-build, goose, opencode), **Ollama** (local-model tools), and
+**Anthropic** (an extra surface for `anthropic`-SDK clients).
 
 ## Get a node running (5 minutes, anyone) — `deltav setup`
 
@@ -55,9 +59,9 @@ tool calling and billing, plus **Ollama** and **Anthropic** surfaces.
 
 | Client expects | Point it at | Notes |
 |---|---|---|
-| OpenAI | `http://<gw>:9000/v1` | goose, opencode, openai SDK, most tools |
+| OpenAI | `http://<gw>:9000/v1` | Hermes, grok-build, goose, opencode, openai SDK — most tools |
 | Ollama | `http://<gw>:9000` | Open WebUI, LangChain-Ollama, desktop apps |
-| Anthropic | `http://<gw>:9000` | OpenClaw & Claude-native agents (anthropic SDK) |
+| Anthropic | `http://<gw>:9000` | any `anthropic`-SDK client |
 
 ```bash
 # OpenAI
@@ -93,9 +97,27 @@ GET http://<gw>:9000/v1/plan?vram_mb=8176   # + which models are already warm on
 ```
 
 On 8 GB (RX 6600M): Qwen2.5-7B fits its native 32k context; Llama-3.2-3B
-reaches its full 128k (quantized KV). The catalog ships 21 curated chat
+reaches its full 128k (quantized KV). The catalog ships curated chat
 models (0.5B–70B: Qwen2.5, Llama 3.x, Gemma 2, Phi, Mistral-Nemo/Small,
-DeepSeek-R1-Distill…) with architecture facts, plus embedding models.
+DeepSeek-R1-Distill, xAI's open Grok…) with architecture facts, plus
+embedding, **multimodal (vision)** and **diffusion** models.
+
+## Model types beyond text
+
+Groundwork (works via the mock backend; a real engine implements one
+`ComputeBackend` interface):
+
+- **Multimodal / vision** — models that take image input
+  (`ModelSpec.vision`, `InferRequest.images`); Qwen2.5-VL in the catalog.
+- **Diffusion (text → image)** — `kind="image"`, an OpenAI-compatible
+  `POST /v1/images/generations` routed to diffusion nodes, paid and
+  spot-checked like text; Stable Diffusion 1.5 and FLUX.1 in the catalog
+  (via stable-diffusion.cpp / GGUF).
+- **A network-native model + RL training** — scaffolding in
+  `deltav/training/`: every receipt is a (prompt, output) pair, every
+  spot-check is a reward signal (verified / slashed) — so the dataset and
+  reward already exist on-chain; `TrainingCoordinator` defines a training
+  round for a powerful node to run in a later phase.
 
 ## Tokenomics
 

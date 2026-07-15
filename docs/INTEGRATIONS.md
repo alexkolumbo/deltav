@@ -68,12 +68,15 @@ OPENAI_API_KEY: deltav
 }
 ```
 
-## OpenClaw / Claude-native agents (Anthropic API)
+## Anthropic-API clients
 
-The gateway serves a native **Anthropic Messages API** — `POST /v1/messages`
-with SSE in Anthropic's event format (`message_start` → `content_block_delta`
-→ `message_stop`) and tool-use blocks. Software built on the `anthropic`
-SDK connects directly, no LiteLLM shim:
+The gateway also serves a native **Anthropic Messages API** —
+`POST /v1/messages` with SSE in Anthropic's event format
+(`message_start` → `content_block_delta` → `message_stop`) and tool-use
+blocks — for any client hardcoded to the `anthropic` SDK. This is just an
+extra compatibility surface; the models are open-source (Qwen, Llama,
+Gemma, Grok…), and most agents (Hermes, grok-build, goose, opencode) speak
+OpenAI, not Anthropic.
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:9000
@@ -92,12 +95,10 @@ print(msg.content[0].text)
 `system`, `tools` (Anthropic input_schema) and `tool_result` are supported;
 the model returns `stop_reason: "tool_use"` when it calls a tool.
 
-> The Anthropic surface is a bridge for Claude-native clients — the models
-> themselves are open-source (Qwen, Llama, Gemma…). If a tool hard-requires
-> LiteLLM, the classic `model: openai/auto`, `api_base: …/v1` proxy also
-> works.
+## Hermes / grok-build / any OPENAI_BASE_URL agent
 
-## Hermes (and any OPENAI_BASE_URL bot)
+Nous-Research Hermes (and stacks built on it) and xAI's grok-build are
+OpenAI-compatible — point them at the OpenAI surface:
 
 ```bash
 export OPENAI_BASE_URL=http://127.0.0.1:9000/v1
