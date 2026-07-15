@@ -39,6 +39,9 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return sorted(self._tools)
 
+    def specs(self) -> list[ToolSpec]:
+        return list(self._tools.values())
+
     def specs_openai(self) -> list[dict]:
         return [
             {

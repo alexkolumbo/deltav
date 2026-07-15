@@ -72,6 +72,9 @@ class State:
         self.params = params
         self.height = 0
         self.supply = 0
+        # RANDAO accumulator: mixes every block's randao_reveal; feeds
+        # proposer selection so the schedule can't be ground in advance.
+        self.randao = ""
         self.accounts: dict[str, Account] = {}
         self.nodes: dict[str, NodeInfo] = {}
         self.receipts: dict[str, Receipt] = {}
@@ -89,6 +92,7 @@ class State:
         return {
             "height": self.height,
             "supply": self.supply,
+            "randao": self.randao,
             "accounts": {a: asdict(acc) for a, acc in sorted(self.accounts.items())},
             "nodes": {a: asdict(n) for a, n in sorted(self.nodes.items())},
             "receipts": {h: asdict(r) for h, r in sorted(self.receipts.items())},
@@ -318,9 +322,11 @@ class State:
         self.supply -= burned
         return burned
 
-    def apply_block_effects(self, proposer: str, fees: int, missed: list[str], height: int) -> None:
-        """Per-block bookkeeping: release matured unbondings, punish
-        proposers that missed their slot, reward the actual proposer."""
+    def apply_block_effects(self, proposer: str, fees: int, missed: list[str],
+                            height: int, randao_reveal: str = "") -> None:
+        """Per-block bookkeeping: mix RANDAO, release matured unbondings,
+        punish proposers that missed their slot, reward the actual proposer."""
+        self.randao = sha256_hex((self.randao + randao_reveal).encode())
         for address in sorted(self.accounts):
             acc = self.accounts[address]
             if not acc.unbonding:

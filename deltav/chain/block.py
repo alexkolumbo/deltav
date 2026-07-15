@@ -25,6 +25,10 @@ class Block:
     # Liveness slot: 0 = primary proposer, s > 0 = fallback proposer that
     # stepped in after s * block_time of silence.
     slot: int = 0
+    # RANDAO reveal: the proposer's ed25519 signature over the fixed
+    # message "randao:{chain_id}:{height}". Deterministic per (key, height)
+    # -> nothing to grind; unpredictable to others until published.
+    randao_reveal: str = ""
     pubkey: str = ""
     signature: str = ""
 
@@ -35,6 +39,7 @@ class Block:
             "timestamp": self.timestamp,
             "proposer": self.proposer,
             "slot": self.slot,
+            "randao_reveal": self.randao_reveal,
             "tx_root": tx_root(self.txs),
             "state_root": self.state_root,
         }
@@ -68,6 +73,7 @@ class Block:
             "txs": [tx.to_dict() for tx in self.txs],
             "state_root": self.state_root,
             "slot": self.slot,
+            "randao_reveal": self.randao_reveal,
             "pubkey": self.pubkey,
             "signature": self.signature,
             "hash": self.hash,
@@ -83,6 +89,7 @@ class Block:
             txs=[Tx.from_dict(t) for t in data.get("txs", [])],
             state_root=data.get("state_root", ""),
             slot=int(data.get("slot", 0)),
+            randao_reveal=data.get("randao_reveal", ""),
             pubkey=data.get("pubkey", ""),
             signature=data.get("signature", ""),
         )

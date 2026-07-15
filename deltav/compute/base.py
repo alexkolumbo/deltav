@@ -21,11 +21,22 @@ from typing import Iterator, Union
 class DeviceInfo:
     vendor: str  # nvidia | amd | intel | apple | groq | asic | cpu
     name: str
+    # Total memory budget for model planning. For multi-GPU boxes this is
+    # the SUM across GPUs — llama.cpp splits layers across them.
     vram_mb: int
     backend: str = ""
+    gpu_count: int = 1
+    gpus: list = field(default_factory=list)  # [{"name", "vram_mb"}, ...]
 
     def to_dict(self) -> dict:
-        return {"vendor": self.vendor, "name": self.name, "vram_mb": self.vram_mb, "backend": self.backend}
+        return {
+            "vendor": self.vendor,
+            "name": self.name,
+            "vram_mb": self.vram_mb,
+            "backend": self.backend,
+            "gpu_count": self.gpu_count,
+            "gpus": self.gpus,
+        }
 
 
 @dataclass

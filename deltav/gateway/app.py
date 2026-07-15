@@ -7,6 +7,7 @@ pays for each job.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -29,6 +30,8 @@ from ..overlay import (
     strip_tool_calls,
     to_openai_tool_calls,
 )
+from ..overlay.memory import MemoryStore
+from ..overlay.tools import ToolSpec
 from ..router import Catalog, RouteError, SmartRouter
 from ..router.catalog import estimate_vram_mb
 
@@ -49,6 +52,7 @@ class GatewayDaemon:
         catalog: Catalog | None = None,
         client: httpx.AsyncClient | None = None,
         tools: ToolRegistry | None = None,
+        memory_path: str | None = None,
     ):
         self.keypair = keypair
         self.node_urls = node_urls
@@ -65,7 +69,63 @@ class GatewayDaemon:
         # Overlay: search engine + tool registry shared by tool-calling and agents.
         self.tools = tools or builtin_registry(self.client)
         self.search = SearchEngine(self.client)
+        self.memory = MemoryStore(memory_path)
         self.app = self._build_app()
+
+    def _agent_registry(self, complete, session_id: str | None, max_steps: int) -> ToolRegistry:
+        """Per-run registry: built-ins + session memory + parallel sub-agents."""
+        registry = ToolRegistry(self.tools.specs())
+
+        if session_id:
+            async def remember(text: str) -> str:
+                item = self.memory.add(session_id, str(text))
+                return f"remembered as {item['id']}"
+
+            async def recall(query: str, k: int = 4) -> str:
+                hits = self.memory.search(session_id, str(query), int(k))
+                if not hits:
+                    return "no matching memories"
+                return "\n".join(f"[{h['id']}] {h['text']}" for h in hits)
+
+            registry.register(ToolSpec(
+                name="remember",
+                description="Store a fact in this session's long-term memory.",
+                parameters={"type": "object", "properties": {"text": {"type": "string"}},
+                            "required": ["text"]},
+                handler=remember,
+            ))
+            registry.register(ToolSpec(
+                name="recall",
+                description="Search this session's long-term memory.",
+                parameters={"type": "object",
+                            "properties": {"query": {"type": "string"},
+                                           "k": {"type": "integer", "default": 4}},
+                            "required": ["query"]},
+                handler=recall,
+            ))
+
+        async def spawn_agents(tasks: list) -> str:
+            """Run up to 4 sub-agents in parallel, each with a fresh context."""
+            sub_registry = ToolRegistry(registry.specs())  # snapshot WITHOUT spawn_agents
+            subs = [Agent(complete, sub_registry, max_steps=max_steps)
+                    for _ in tasks[:4]]
+            results = await asyncio.gather(
+                *(agent.run(str(task)) for agent, task in zip(subs, tasks[:4])))
+            return json.dumps(
+                [{"task": str(t), "answer": r.answer, "steps": len(r.steps)}
+                 for t, r in zip(tasks[:4], results)],
+                ensure_ascii=False)
+
+        registry.register(ToolSpec(
+            name="spawn_agents",
+            description=("Delegate independent subtasks to up to 4 parallel sub-agents "
+                         "(fresh context each). Returns their answers as JSON."),
+            parameters={"type": "object",
+                        "properties": {"tasks": {"type": "array", "items": {"type": "string"}}},
+                        "required": ["tasks"]},
+            handler=spawn_agents,
+        ))
+        return registry
 
     async def close(self) -> None:
         if self._owns_client:
@@ -123,6 +183,7 @@ class GatewayDaemon:
             if not task:
                 raise HTTPException(400, "task required")
             model = body.get("model", "auto")
+            session_id = (body.get("session_id") or "").strip() or None
             max_steps = min(int(body.get("max_steps", 6)), 16)
             await self.router.refresh(self.node_urls)
 
@@ -135,16 +196,29 @@ class GatewayDaemon:
                 )
                 return result.text, {"node": result.node, "receipt_tx": result.receipt_tx}
 
-            agent = Agent(complete, self.tools, max_steps=max_steps)
+            registry = self._agent_registry(complete, session_id, max_steps)
+
+            memory_used: list[dict] = []
+            agent_task = task
+            if session_id:
+                memory_used = self.memory.search(session_id, task, k=3)
+                if memory_used:
+                    context = "\n".join(f"- {h['text']}" for h in memory_used)
+                    agent_task = f"Relevant memory from earlier sessions:\n{context}\n\nTask: {task}"
+
+            agent = Agent(complete, registry, max_steps=max_steps)
             try:
-                result = await agent.run(task)
+                result = await agent.run(agent_task)
             except RouteError as exc:
                 raise HTTPException(503, str(exc))
             return {
                 "task": task,
+                "session_id": session_id,
                 "answer": result.answer,
                 "finished": result.finished,
                 "model_calls": result.model_calls,
+                "memory_used": [{"id": h["id"], "text": h["text"], "score": h["score"]}
+                                for h in memory_used],
                 "steps": [
                     {
                         "tool": s.tool, "arguments": s.arguments,
@@ -153,8 +227,16 @@ class GatewayDaemon:
                     }
                     for s in result.steps
                 ],
-                "tools_available": self.tools.names(),
+                "tools_available": registry.names(),
             }
+
+        @app.get("/v1/memory")
+        async def memory_view(session: str, q: str = "", k: int = 8) -> dict:
+            if q:
+                items = self.memory.search(session, q, k)
+            else:
+                items = self.memory.session_items(session)[-k:]
+            return {"session": session, "items": items}
 
         @app.post("/v1/chat/completions")
         async def chat_completions(body: dict):

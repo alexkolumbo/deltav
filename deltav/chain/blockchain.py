@@ -8,7 +8,13 @@ from pathlib import Path
 from ..config import Genesis
 from ..crypto import KeyPair
 from .block import Block, GENESIS_PROPOSER, ZERO_HASH
-from .consensus import ConsensusError, expected_proposer, missed_proposers, validate_block
+from .consensus import (
+    ConsensusError,
+    expected_proposer,
+    missed_proposers,
+    randao_message,
+    validate_block,
+)
 from .state import State, StateError
 from .transaction import Tx
 
@@ -181,8 +187,9 @@ class Blockchain:
                 continue
             included.append(tx)
             fees += tx.fee
+        reveal = keypair.sign(randao_message(self.genesis.params.chain_id, height))
         missed = missed_proposers(self.state, height, self.head.hash, slot)
-        trial.apply_block_effects(keypair.address, fees, missed, height)
+        trial.apply_block_effects(keypair.address, fees, missed, height, reveal)
         trial.height = height
         block = Block(
             height=height,
@@ -192,6 +199,7 @@ class Blockchain:
             txs=included,
             state_root=trial.state_root(),
             slot=slot,
+            randao_reveal=reveal,
         )
         return block.sign(keypair)
 

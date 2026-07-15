@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 
+from ..crypto import verify_signature
 from .block import Block, GENESIS_PROPOSER
 from .state import State, StateError
 
@@ -20,12 +21,19 @@ class ConsensusError(Exception):
     pass
 
 
+def randao_message(chain_id: str, height: int) -> bytes:
+    """Fixed per-height message the proposer signs as its RANDAO reveal.
+    No timestamp, no tx content — a deterministic ed25519 signature over
+    this leaves the proposer nothing to grind."""
+    return f"randao:{chain_id}:{height}".encode()
+
+
 def expected_proposer(state: State, height: int, prev_hash: str, slot: int = 0) -> str | None:
     validators = state.validators()
     total = sum(stake for _, stake in validators)
     if total <= 0:
         return None
-    seed_bytes = hashlib.sha256(f"{prev_hash}:{height}:{slot}".encode()).digest()
+    seed_bytes = hashlib.sha256(f"{state.randao}:{prev_hash}:{height}:{slot}".encode()).digest()
     ticket = int.from_bytes(seed_bytes, "big") % total
     acc = 0
     for address, stake in validators:
@@ -66,6 +74,10 @@ def validate_block(state: State, prev: Block, block: Block) -> State:
         raise ConsensusError(
             f"wrong proposer {block.proposer} for slot {block.slot}, expected {proposer}"
         )
+    if not verify_signature(
+        block.pubkey, randao_message(state.params.chain_id, block.height), block.randao_reveal
+    ):
+        raise ConsensusError("invalid randao reveal")
 
     new_state = state.clone()
     fees = 0
@@ -76,7 +88,8 @@ def validate_block(state: State, prev: Block, block: Block) -> State:
             raise ConsensusError(f"invalid tx {tx.hash[:12]}: {exc}") from exc
         fees += tx.fee
     missed = missed_proposers(state, block.height, prev.hash, block.slot)
-    new_state.apply_block_effects(block.proposer, fees, missed, block.height)
+    new_state.apply_block_effects(block.proposer, fees, missed, block.height,
+                                  block.randao_reveal)
     new_state.height = block.height
 
     if block.state_root != new_state.state_root():

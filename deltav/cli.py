@@ -85,6 +85,7 @@ def _cmd_node(args: argparse.Namespace) -> int:
         models=args.model,
         stake=int(args.stake * DVT),
         data_dir=args.data_dir,
+        max_parallel_jobs=args.parallel,
     )
     _run_node(keypair, genesis, cfg)
     return 0
@@ -132,6 +133,7 @@ def _cmd_join(args: argparse.Namespace) -> int:
         models=[spec.ref] if spec else [],
         stake=int(args.stake * DVT),
         data_dir=data_dir,
+        max_parallel_jobs=args.parallel,
     )
     _run_node(keypair, genesis, cfg)
     return 0
@@ -144,7 +146,8 @@ def _cmd_gateway(args: argparse.Namespace) -> int:
 
     keypair = load_or_create(args.wallet or wallet_path("gateway"))
     params = Genesis.load(args.genesis).params if args.genesis else ChainParams()
-    daemon = GatewayDaemon(keypair, node_urls=args.node, params=params)
+    daemon = GatewayDaemon(keypair, node_urls=args.node, params=params,
+                           memory_path=args.memory_file or None)
     print(f"gateway {keypair.address} on http://{args.host}:{args.port} -> nodes {args.node}")
 
     async def run() -> None:
@@ -243,6 +246,7 @@ def _cmd_agent(args: argparse.Namespace) -> int:
         "task": args.task,
         "model": args.model,
         "max_steps": args.max_steps,
+        "session_id": args.session,
     }, timeout=600.0)
     if resp.status_code != 200:
         print(f"error {resp.status_code}: {resp.text}", file=sys.stderr)
@@ -313,6 +317,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_node.add_argument("--model", action="append", default=[], help="model ref to announce (repeatable)")
     p_node.add_argument("--stake", type=float, default=0.0, help="DVT to stake at startup")
     p_node.add_argument("--data-dir", default="", help="persist the chain to this directory")
+    p_node.add_argument("--parallel", type=int, default=1,
+                        help="concurrent inference jobs (keep 1 per GPU)")
     p_node.set_defaults(func=_cmd_node)
 
     p_join = sub.add_parser(
@@ -327,6 +333,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_join.add_argument("--stake", type=float, default=0.0)
     p_join.add_argument("--no-download", action="store_true")
     p_join.add_argument("--data-dir", default="")
+    p_join.add_argument("--parallel", type=int, default=1,
+                        help="concurrent inference jobs (keep 1 per GPU)")
     p_join.set_defaults(func=_cmd_join)
 
     p_bal = sub.add_parser("balance", help="show an account")
@@ -355,6 +363,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_gw.add_argument("--host", default="127.0.0.1")
     p_gw.add_argument("--port", type=int, default=9000)
     p_gw.add_argument("--node", action="append", required=True, help="node base URL (repeatable)")
+    p_gw.add_argument("--memory-file", default="",
+                      help="persist agent session memory to this jsonl file")
     p_gw.set_defaults(func=_cmd_gateway)
 
     p_sim = sub.add_parser("sim", help="run a local simulated network")
@@ -374,6 +384,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_agent.add_argument("--gateway", default="http://127.0.0.1:9000")
     p_agent.add_argument("--model", default="auto")
     p_agent.add_argument("--max-steps", type=int, default=6)
+    p_agent.add_argument("--session", default="",
+                         help="session id: enables remember/recall memory tools")
     p_agent.set_defaults(func=_cmd_agent)
 
     p_chat = sub.add_parser("chat", help="one-shot chat through the network")

@@ -17,18 +17,36 @@ def _run(cmd: list[str]) -> str | None:
     return None
 
 
+def parse_nvidia_smi(output: str) -> DeviceInfo | None:
+    """Parse `nvidia-smi --query-gpu=name,memory.total` CSV — all GPUs."""
+    gpus = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        try:
+            name, mem = [p.strip() for p in line.rsplit(",", 1)]
+            gpus.append({"name": name, "vram_mb": int(float(mem))})
+        except ValueError:
+            continue
+    if not gpus:
+        return None
+    label = gpus[0]["name"] + (f" x{len(gpus)}" if len(gpus) > 1 else "")
+    return DeviceInfo(
+        vendor="nvidia",
+        name=label,
+        vram_mb=sum(g["vram_mb"] for g in gpus),
+        gpu_count=len(gpus),
+        gpus=gpus,
+    )
+
+
 def _detect_nvidia() -> DeviceInfo | None:
     if not shutil.which("nvidia-smi"):
         return None
     out = _run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"])
     if not out:
         return None
-    first = out.splitlines()[0]
-    try:
-        name, mem = [p.strip() for p in first.rsplit(",", 1)]
-        return DeviceInfo(vendor="nvidia", name=name, vram_mb=int(float(mem)))
-    except ValueError:
-        return None
+    return parse_nvidia_smi(out)
 
 
 def _detect_amd() -> DeviceInfo | None:

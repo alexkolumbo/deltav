@@ -49,6 +49,9 @@ class NodeConfig:
     auto_register: bool = True
     device: DeviceInfo | None = None
     data_dir: str = ""             # persist the chain to <data_dir>/blocks.jsonl
+    # Concurrent inference jobs. 1 is the safe default for a single GPU
+    # (llama.cpp contexts are not thread-safe); raise for API relays/mock.
+    max_parallel_jobs: int = 1
 
     def public_url(self) -> str:
         return self.endpoint or f"http://{self.host}:{self.port}"
@@ -74,6 +77,7 @@ class NodeDaemon:
         self.peers: set[str] = {p for p in cfg.peers if p != cfg.public_url()}
         self.jobs: dict[str, dict] = {}      # request_hash -> job params (for spot checkers)
         self.active_jobs = 0
+        self._job_sem = asyncio.Semaphore(max(1, cfg.max_parallel_jobs))
         self._seen_blocks: set[str] = set()
         self._head_seen_at = time.monotonic()
         self._tasks: list[asyncio.Task] = []
@@ -136,7 +140,8 @@ class NodeDaemon:
                 "backend": self.backend.name,
                 "device": self.device.to_dict(),
                 "models": self.cfg.models,
-                "load": min(1.0, self.active_jobs / 4.0),
+                "load": min(1.0, self.active_jobs / max(1, self.cfg.max_parallel_jobs)),
+                "max_parallel_jobs": self.cfg.max_parallel_jobs,
                 "mempool": len(self.mempool),
                 "peers": len(self.peers),
             }
@@ -297,7 +302,8 @@ class NodeDaemon:
                                max_tokens=max_tokens, temperature=temperature, seed=seed)
         self.active_jobs += 1
         try:
-            result = await asyncio.to_thread(self.backend.infer, request)
+            async with self._job_sem:
+                result = await asyncio.to_thread(self.backend.infer, request)
         except Exception as exc:
             raise HTTPException(500, f"inference failed: {exc}")
         finally:
@@ -361,6 +367,7 @@ class NodeDaemon:
                 loop.call_soon_threadsafe(queue.put_nowait, done)
 
         self.active_jobs += 1
+        await self._job_sem.acquire()
         producer = asyncio.create_task(asyncio.to_thread(produce))
         pieces: list[str] = []
         try:
@@ -410,6 +417,7 @@ class NodeDaemon:
                 yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
         finally:
             self.active_jobs -= 1
+            self._job_sem.release()
             producer.cancel()
 
     # --------------------------------------------------------------- loops
