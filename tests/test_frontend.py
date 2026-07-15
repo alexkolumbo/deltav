@@ -49,7 +49,7 @@ def update(text: str, chat_id: int = 7, user_id: int = 42) -> dict:
         "chat": {"id": chat_id}, "from": {"id": user_id}, "text": text}}
 
 
-async def test_plain_text_chats_with_history_and_receipt():
+async def test_fast_mode_chats_with_history_and_receipt():
     def chat_route(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         assert payload["messages"][-1] == {"role": "user", "content": "привет"}
@@ -60,10 +60,45 @@ async def test_plain_text_chats_with_history_and_receipt():
         })
 
     bot, sent = make_bot({"/v1/chat/completions": chat_route})
+    bot.modes[7] = "fast"
     await bot.handle(update("привет"))
     assert "здравствуй" in sent[0]["text"]
     assert "abcdef12" in sent[0]["text"]  # the receipt travels to the phone
     assert bot.histories[7][-1]["role"] == "assistant"
+
+
+async def test_smart_mode_is_default_and_uses_agent_with_context():
+    calls = []
+
+    def agent_route(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        return httpx.Response(200, json={
+            "answer": "нашёл в сети: матч 11 июня", "model_calls": 2, "finished": True,
+            "steps": [{"tool": "web_search", "arguments": {"query": "fifa 2026"},
+                       "result": "...", "node": "n", "receipt_tx": "r"}],
+        })
+
+    bot, sent = make_bot({"/v1/agents/run": agent_route})
+    await bot.handle(update("когда матч fifa 2026?"))
+    assert calls[0]["session_id"] == "tg-7"
+    assert "web_search" in sent[0]["text"] and "11 июня" in sent[0]["text"]
+    # dialog history now feeds the next smart task as context
+    await bot.handle({**update("а где?"), "update_id": 2})
+    assert "Контекст диалога" in calls[1]["task"]
+    assert "а где?" in calls[1]["task"]
+
+
+async def test_duplicate_updates_are_ignored():
+    def agent_route(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"answer": "ok", "model_calls": 1,
+                                         "finished": True, "steps": []})
+
+    bot, sent = make_bot({"/v1/agents/run": agent_route})
+    u = update("привет")
+    await bot.handle(u)
+    await bot.handle(u)  # telegram redelivery after a broken long poll
+    assert len(sent) == 1
 
 
 async def test_allowlist_blocks_strangers():

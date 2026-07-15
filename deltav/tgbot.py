@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import sys
+from collections import OrderedDict, defaultdict
 
 import httpx
 
@@ -28,6 +29,9 @@ log = logging.getLogger("deltav.tgbot")
 
 HISTORY_CHAR_BUDGET = 9000
 MAX_TOKENS = 900
+# How much recent dialog travels into an agent task as context.
+SMART_CONTEXT_MSGS = 4
+SMART_CONTEXT_CHARS = 500
 
 
 class TgBot:
@@ -38,8 +42,15 @@ class TgBot:
         self.allow = allow or set()
         self.client = client or httpx.AsyncClient(timeout=330.0)
         self.histories: dict[int, list[dict]] = {}
-        self.models: dict[int, str] = {}  # chat_id -> chosen model
+        self.models: dict[int, str] = {}   # chat_id -> chosen model
+        # "smart" = every message goes through the agent (web search when
+        # the model decides it needs it); "fast" = plain chat, no tools.
+        self.modes: dict[int, str] = {}
         self._offset = 0
+        # Telegram redelivers updates when a long poll breaks mid-flight —
+        # without dedupe the same question gets answered twice.
+        self._seen: OrderedDict[int, None] = OrderedDict()
+        self._locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     # ----------------------------------------------------------- telegram
     async def tg(self, method: str, **params):
@@ -99,10 +110,25 @@ class TgBot:
         lines = []
         for s in data.get("steps", []):
             lines.append(f"🛠 {s['tool']}({json.dumps(s['arguments'], ensure_ascii=False)[:120]})")
-        lines.append("")
+        if lines:
+            lines.append("")
         lines.append(data.get("answer", "(пусто)"))
         lines.append(f"\n· агент: {data.get('model_calls')} вызовов, память сессии tg-{chat_id}")
         return "\n".join(lines)
+
+    async def do_smart(self, chat_id: int, text: str) -> str:
+        """Default mode: route through the agent with recent dialog as
+        context — the model itself decides whether to hit web_search."""
+        history = self.history(chat_id)
+        recent = history[-SMART_CONTEXT_MSGS:]
+        context = "\n".join(
+            f"{m['role']}: {m['content'][:SMART_CONTEXT_CHARS]}" for m in recent)
+        task = (f"Контекст диалога:\n{context}\n\nСообщение пользователя: {text}"
+                if context else text)
+        answer = await self.do_agent(chat_id, task)
+        history.append({"role": "user", "content": text})
+        history.append({"role": "assistant", "content": answer.split("\n\n·")[0][:1500]})
+        return answer
 
     async def do_models(self) -> str:
         data = (await self.client.get(f"{self.gateway}/v1/models")).json()
@@ -135,17 +161,31 @@ class TgBot:
 
     HELP = (
         "ΔV — децентрализованная AI-сеть.\n\n"
-        "Просто пишите — отвечает модель с сети (каждый ответ = чек в чейне).\n\n"
-        "/agent <задача> — агент с web-поиском и памятью\n"
+        "Просто пишите — по умолчанию отвечает агент: сам ищет в интернете,"
+        " когда это нужно, помнит сессию (каждый ответ = чек в чейне).\n\n"
+        "/fast — быстрый режим без инструментов\n"
+        "/smart — вернуть агентский режим (по умолчанию)\n"
+        "/agent <задача> — явный запуск агента\n"
         "/model [ref|auto] — выбрать модель\n"
         "/models — что доступно\n"
         "/net — состояние сети\n"
         "/plan [vram_mb] — что запускать на железе\n"
+        "/id — ваш Telegram ID (для allowlist)\n"
         "/reset — забыть диалог"
     )
 
     # ----------------------------------------------------------- dispatch
+    def _duplicate(self, update_id: int) -> bool:
+        if update_id in self._seen:
+            return True
+        self._seen[update_id] = None
+        while len(self._seen) > 500:
+            self._seen.popitem(last=False)
+        return False
+
     async def handle(self, update: dict) -> None:
+        if self._duplicate(update.get("update_id", -1)):
+            return
         msg = update.get("message") or {}
         chat_id = (msg.get("chat") or {}).get("id")
         user_id = (msg.get("from") or {}).get("id")
@@ -158,32 +198,45 @@ class TgBot:
 
         cmd, _, arg = text.partition(" ")
         cmd = cmd.split("@")[0].lower()
-        try:
-            if cmd in ("/start", "/help"):
-                await self.send(chat_id, self.HELP)
-            elif cmd == "/reset":
-                self.histories.pop(chat_id, None)
-                await self.send(chat_id, "🗑 диалог забыт")
-            elif cmd == "/model":
-                self.models[chat_id] = arg.strip() or "auto"
-                await self.send(chat_id, f"модель: {self.models[chat_id]}")
-            elif cmd == "/models":
-                await self.send(chat_id, await self.do_models())
-            elif cmd == "/net":
-                await self.send(chat_id, await self.do_net())
-            elif cmd == "/plan":
-                await self.send(chat_id, await self.do_plan(int(arg) if arg.strip() else 8176))
-            elif cmd == "/agent":
-                if not arg.strip():
-                    await self.send(chat_id, "формат: /agent <задача>")
-                    return
-                await self.tg("sendChatAction", chat_id=chat_id, action="typing")
-                await self.send(chat_id, await self.do_agent(chat_id, arg.strip()))
-            else:
-                await self.tg("sendChatAction", chat_id=chat_id, action="typing")
-                await self.send(chat_id, await self.do_chat(chat_id, text))
-        except httpx.HTTPError as exc:
-            await self.send(chat_id, f"⚠ сеть недоступна: {exc}")
+        # one message at a time per chat: concurrent replies corrupt history
+        async with self._locks[chat_id]:
+            try:
+                if cmd in ("/start", "/help"):
+                    await self.send(chat_id, self.HELP)
+                elif cmd == "/id":
+                    await self.send(chat_id, f"ваш Telegram ID: {user_id}")
+                elif cmd == "/reset":
+                    self.histories.pop(chat_id, None)
+                    await self.send(chat_id, "🗑 диалог забыт")
+                elif cmd == "/fast":
+                    self.modes[chat_id] = "fast"
+                    await self.send(chat_id, "⚡ быстрый режим: без поиска и инструментов")
+                elif cmd == "/smart":
+                    self.modes[chat_id] = "smart"
+                    await self.send(chat_id, "🛠 агентский режим: поиск и память включены")
+                elif cmd == "/model":
+                    self.models[chat_id] = arg.strip() or "auto"
+                    await self.send(chat_id, f"модель: {self.models[chat_id]}")
+                elif cmd == "/models":
+                    await self.send(chat_id, await self.do_models())
+                elif cmd == "/net":
+                    await self.send(chat_id, await self.do_net())
+                elif cmd == "/plan":
+                    await self.send(chat_id, await self.do_plan(int(arg) if arg.strip() else 8176))
+                elif cmd == "/agent":
+                    if not arg.strip():
+                        await self.send(chat_id, "формат: /agent <задача>")
+                        return
+                    await self.tg("sendChatAction", chat_id=chat_id, action="typing")
+                    await self.send(chat_id, await self.do_agent(chat_id, arg.strip()))
+                else:
+                    await self.tg("sendChatAction", chat_id=chat_id, action="typing")
+                    if self.modes.get(chat_id, "smart") == "fast":
+                        await self.send(chat_id, await self.do_chat(chat_id, text))
+                    else:
+                        await self.send(chat_id, await self.do_smart(chat_id, text))
+            except httpx.HTTPError as exc:
+                await self.send(chat_id, f"⚠ сеть недоступна: {exc}")
 
     async def run(self) -> None:
         me = await self.tg("getMe")
