@@ -242,6 +242,21 @@ class NodeDaemon:
         async def chain_blocks(start: int = 0, count: int = 500) -> dict:
             return {"blocks": self.chain.blocks_from(start, count)}
 
+        @app.get("/chain/headers")
+        async def chain_headers(start: int = 0, count: int = 2000) -> dict:
+            """Signed headers only — a light client verifies the chain's
+            integrity without downloading every transaction."""
+            headers = []
+            for block in self.chain.blocks[start : start + count]:
+                headers.append({
+                    **block.header(),
+                    "hash": block.hash,
+                    "pubkey": block.pubkey,
+                    "signature": block.signature,
+                    "randao_reveal": block.randao_reveal,
+                })
+            return {"headers": headers, "height": self.chain.height}
+
         @app.get("/chain/nodes")
         async def chain_nodes() -> dict:
             state = self.chain.state
@@ -593,6 +608,14 @@ class NodeDaemon:
         while self._running:
             await asyncio.sleep(params.block_time / 2)
             if not self.cfg.produce:
+                continue
+            # A corrupt/forked persisted tail means our prefix may diverge
+            # from the network — produce nothing until a peer re-syncs us,
+            # or we'd bake the fork into new blocks.
+            if self.chain.restore_incomplete:
+                if not self.cfg.peers:
+                    log.error("restore incomplete and no peers to re-sync from — "
+                              "not producing; start with --peer to recover")
                 continue
             elapsed = time.monotonic() - self._head_seen_at
             # Slot 0 opens after block_time; fallback slot s (s >= 1) waits an

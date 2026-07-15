@@ -59,6 +59,10 @@ class Blockchain:
         self._prev_state: State | None = None
         self._snapshots: dict[int, State] = {}
         self.metrics = {"sibling_fast": 0, "replace_base_height": None}
+        # True when on-disk replay stopped before the file's end — the
+        # persisted tail is corrupt/forked, so the node must NOT produce on
+        # this partial prefix (that bakes a fork); it re-syncs from peers.
+        self.restore_incomplete = False
         if self.path is not None:
             self._load_from_disk()
 
@@ -75,15 +79,21 @@ class Blockchain:
 
     # --------------------------------------------------------- persistence
     def _load_from_disk(self) -> None:
-        """Replay blocks.jsonl; a corrupt/forked tail is truncated, not fatal."""
+        """Replay blocks.jsonl. If replay stops before the file ends, the
+        tail is corrupt/forked: we keep the valid prefix but flag the chain
+        `restore_incomplete` so the daemon re-syncs from peers instead of
+        producing on top of the prefix (which would fork the network)."""
         if not self.path.exists():
             return
+        total = 0
         loaded = 0
+        broke = False
         with self.path.open(encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
                     continue
+                total += 1
                 try:
                     block = Block.from_dict(json.loads(line))
                     if block.height == 0:
@@ -94,11 +104,18 @@ class Blockchain:
                     self._commit(block)
                     loaded += 1
                 except (ConsensusError, ValueError, KeyError) as exc:
-                    log.warning("stopping replay at height %s: %s", self.height + 1, exc)
+                    log.error("REPLAY BROKE at height %s: %s — persisted tail is corrupt; "
+                              "will re-sync from peers, not produce on the partial prefix",
+                              self.height + 1, exc)
+                    broke = True
                     break
         if loaded:
             log.info("restored chain to height %s from %s", self.height, self.path)
-        self._rewrite_disk()
+        # incomplete only if we stopped mid-file (broke) — a clean full read
+        # that simply ended is complete.
+        self.restore_incomplete = broke
+        if not broke:
+            self._rewrite_disk()
 
     def _append_disk(self, block: Block) -> None:
         if self.path is None:
@@ -243,19 +260,27 @@ class Blockchain:
         if not incoming or incoming[0].hash != self.blocks[0].hash:
             return False
 
-        common = 0
-        for ours, theirs in zip(self.blocks, incoming):
-            if ours.hash != theirs.hash:
-                break
-            common += 1
+        # When our persisted prefix is suspect, don't trust our snapshots to
+        # short-circuit — the common-ancestor state must be rebuilt from
+        # genesis so a forked prefix can't poison the adopted chain.
+        if self.restore_incomplete:
+            common = 1  # only genesis is trusted
+        else:
+            common = 0
+            for ours, theirs in zip(self.blocks, incoming):
+                if ours.hash != theirs.hash:
+                    break
+                common += 1
         ancestor = common - 1  # >= 0, genesis always shared
 
         try:
-            state = self._state_at(ancestor)
+            state = self._state_at(ancestor) if not self.restore_incomplete \
+                else build_genesis_state(self.genesis)
             prev_block = incoming[ancestor]
             prev_state: State | None = None
             snapshots: dict[int, State] = {
-                h: s for h, s in self._snapshots.items() if h <= ancestor
+                h: s for h, s in self._snapshots.items()
+                if h <= ancestor and not self.restore_incomplete
             }
             for block in incoming[ancestor + 1 :]:
                 prev_state = state
@@ -272,6 +297,7 @@ class Blockchain:
         self._snapshots = dict(sorted(snapshots.items())[-self.MAX_SNAPSHOTS:])
         self.metrics["replace_base_height"] = max(
             (h for h in self._snapshots if h <= ancestor), default=0)
+        self.restore_incomplete = False  # a full valid chain healed us
         self._rewrite_disk()
         return True
 

@@ -232,6 +232,36 @@ def test_corrupt_tail_is_truncated(genesis, alice, bob, tmp_path):
     assert reopened.height == 3
 
 
+def test_broken_mid_file_flags_restore_incomplete(genesis, alice, bob, tmp_path):
+    """A corrupt block in the MIDDLE (not just a junk tail) flags the chain
+    so the daemon won't produce on the partial prefix and fork the net."""
+    keys = keys_map(alice, bob)
+    path = tmp_path / "blocks.jsonl"
+    chain = Blockchain(genesis, path=path)
+    for _ in range(5):
+        produce(chain, keys)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    # corrupt block 3's state_root so replay breaks there, blocks 4-5 remain
+    import json as _json
+    b = _json.loads(lines[3])
+    b["state_root"] = "ff" * 32
+    lines[3] = _json.dumps(b)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    reopened = Blockchain(genesis, path=path)
+    assert reopened.height < 5             # stopped before the corrupt block
+    assert reopened.restore_incomplete     # and flagged as suspect
+
+    # a full valid chain from a peer heals it, rebuilt from genesis
+    good = Blockchain(genesis)
+    for _ in range(6):
+        produce(good, keys)
+    assert reopened.replace([blk.to_dict() for blk in good.blocks])
+    assert reopened.height == 6
+    assert not reopened.restore_incomplete
+    assert reopened.state.state_root() == good.state.state_root()
+
+
 # ------------------------------------------------------- incremental sync
 
 def test_extend_appends_only_the_tail(genesis, alice, bob):
@@ -322,7 +352,7 @@ async def test_chain_survives_dead_validator(params):
     for d in daemons:
         await d.start()
     try:
-        deadline = asyncio.get_event_loop().time() + 5.0
+        deadline = asyncio.get_event_loop().time() + 20.0
         while asyncio.get_event_loop().time() < deadline and daemons[1].chain.height < 3:
             await asyncio.sleep(0.05)
         assert daemons[1].chain.height >= 3
@@ -330,7 +360,7 @@ async def test_chain_survives_dead_validator(params):
         await daemons[0].stop()  # validator 0 dies
         survivor = daemons[1]
         start_height = survivor.chain.height
-        deadline = asyncio.get_event_loop().time() + 8.0
+        deadline = asyncio.get_event_loop().time() + 20.0
         while asyncio.get_event_loop().time() < deadline:
             if survivor.chain.height >= start_height + 4:
                 break

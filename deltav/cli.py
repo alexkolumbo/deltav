@@ -258,6 +258,55 @@ def _cmd_keys(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_verify(args: argparse.Namespace) -> int:
+    from .light import LightClient
+    from .wallet import load_wallet
+
+    genesis = Genesis.load(args.genesis)
+    nodes = args.node or [args.gateway.replace(":9000", ":9100")]
+
+    async def run() -> int:
+        lc = LightClient(genesis, nodes)
+        rc = 0
+        try:
+            print("== целостность цепочки ==")
+            hv = await lc.verify_headers()
+            print(f"  {'OK' if hv.ok else 'СБОЙ'}: проверено {hv.checked} заголовков "
+                  f"до высоты {hv.height}" + (f" — {hv.error}" if hv.error else ""))
+            rc |= 0 if hv.ok else 1
+
+            head_hash, height, votes = await lc.quorum_head()
+            print(f"== кворум ({len(nodes)} нод) ==")
+            print(f"  голова {head_hash[:16]}… высота {height} — {votes}/{len(nodes)} согласны")
+
+            if args.address or args.wallet:
+                address = args.address
+                pubkey = None
+                if args.wallet:
+                    kp = load_wallet(args.wallet)
+                    address, pubkey = kp.address, kp.public_hex
+                bal, bvotes = await lc.quorum_balance(address)
+                print(f"== счёт {address[:16]}… ==")
+                print(f"  баланс {bal / DVT:,.6f} DVT ({bvotes}/{len(nodes)} согласны)")
+                audit = await lc.audit_charges(address, pubkey)
+                print(f"== аудит списаний ({len(audit.charges)}) ==")
+                for c in audit.charges:
+                    mark = "✓" if c.authorized else "✗ НЕ АВТОРИЗОВАНО"
+                    print(f"  {mark} h{c.height} {c.receipt_hash[:12]}… "
+                          f"{c.model.split('::')[0].split('/')[-1]} "
+                          f"лимит {c.price_limit} udvt")
+                if not audit.all_authorized:
+                    print("  ⚠ ОБНАРУЖЕНЫ НЕАВТОРИЗОВАННЫЕ СПИСАНИЯ")
+                    rc |= 1
+                elif audit.charges:
+                    print("  все списания подписаны вашим ключом ✓")
+        finally:
+            await lc.close()
+        return rc
+
+    return asyncio.run(run())
+
+
 def _cmd_price(args: argparse.Namespace) -> int:
     from .economics import price_report
 
@@ -475,6 +524,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_sim.add_argument("--duration", type=float, default=25.0)
     p_sim.add_argument("--base-port", type=int, default=9100)
     p_sim.set_defaults(func=_cmd_sim)
+
+    p_verify = sub.add_parser(
+        "verify", help="light-client verification: chain integrity + your charges")
+    p_verify.add_argument("--genesis", required=True)
+    p_verify.add_argument("--node", action="append", default=[],
+                          help="node base URL for quorum (repeatable)")
+    p_verify.add_argument("--gateway", default="http://127.0.0.1:9000",
+                          help="fallback if no --node given")
+    p_verify.add_argument("--address", default="", help="account to audit")
+    p_verify.add_argument("--wallet", default="",
+                          help="wallet file: audits its address AND checks signatures")
+    p_verify.set_defaults(func=_cmd_verify)
 
     p_price = sub.add_parser(
         "price", help="cost-anchored pricing: electricity + 50% service margin")
