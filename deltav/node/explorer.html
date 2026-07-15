@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delta V Explorer</title>
+<style>
+  :root { --bg:#0b0d10; --panel:#14181d; --line:#232a32; --fg:#e6edf3; --dim:#8b98a5;
+          --accent:#ff7a1a; --ok:#3fb950; --bad:#f85149; --warn:#d29922; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--fg); font:14px/1.5 ui-monospace,Consolas,monospace; padding:24px; }
+  h1 { font-size:20px; letter-spacing:.06em; margin-bottom:4px; }
+  h1 .dv { color:var(--accent); }
+  .sub { color:var(--dim); margin-bottom:20px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:24px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
+  .card .k { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
+  .card .v { font-size:22px; margin-top:4px; }
+  section { margin-bottom:28px; }
+  h2 { font-size:13px; color:var(--dim); text-transform:uppercase; letter-spacing:.1em; margin-bottom:10px; }
+  table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  th,td { padding:8px 12px; text-align:left; border-bottom:1px solid var(--line); font-size:13px; }
+  th { color:var(--dim); font-weight:normal; font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+  tr:last-child td { border-bottom:none; }
+  .addr { color:var(--accent); }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); } .dim { color:var(--dim); }
+  .bar { display:inline-block; width:80px; height:8px; background:var(--line); border-radius:4px; vertical-align:middle; margin-right:6px; }
+  .bar i { display:block; height:100%; background:var(--accent); border-radius:4px; }
+  .rep i { background:var(--ok); }
+  #err { color:var(--bad); margin-bottom:12px; display:none; }
+</style>
+</head>
+<body>
+<h1><span class="dv">&Delta;V</span> DELTA V EXPLORER</h1>
+<div class="sub" id="meta">connecting&hellip;</div>
+<div id="err"></div>
+
+<div class="cards">
+  <div class="card"><div class="k">Height</div><div class="v" id="c-height">–</div></div>
+  <div class="card"><div class="k">Supply</div><div class="v" id="c-supply">–</div></div>
+  <div class="card"><div class="k">Nodes</div><div class="v" id="c-nodes">–</div></div>
+  <div class="card"><div class="k">Validators</div><div class="v" id="c-validators">–</div></div>
+  <div class="card"><div class="k">Receipts</div><div class="v" id="c-receipts">–</div></div>
+  <div class="card"><div class="k">Mempool</div><div class="v" id="c-mempool">–</div></div>
+</div>
+
+<section>
+  <h2>Nodes</h2>
+  <table><thead><tr>
+    <th>address</th><th>endpoint</th><th>hardware</th><th>load</th><th>reputation</th>
+    <th>stake</th><th>jobs</th><th>models</th><th>status</th>
+  </tr></thead><tbody id="t-nodes"></tbody></table>
+</section>
+
+<section>
+  <h2>Latest blocks</h2>
+  <table><thead><tr>
+    <th>height</th><th>proposer</th><th>slot</th><th>txs</th><th>time</th><th>hash</th>
+  </tr></thead><tbody id="t-blocks"></tbody></table>
+</section>
+
+<section>
+  <h2>Inference receipts</h2>
+  <table><thead><tr>
+    <th>receipt</th><th>node</th><th>model</th><th>tokens</th><th>paid</th><th>mode</th><th>verdict</th>
+  </tr></thead><tbody id="t-receipts"></tbody></table>
+</section>
+
+<script>
+const $ = id => document.getElementById(id);
+const short = s => s ? s.slice(0, 14) + '…' : '–';
+const dvt = u => (u / 1e6).toLocaleString(undefined, {maximumFractionDigits: 4}) + ' DVT';
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function j(path) { const r = await fetch(path); if (!r.ok) throw new Error(path + ' ' + r.status); return r.json(); }
+
+// Live health per node endpoint (best effort; cross-origin may fail — show chain data only).
+async function nodeHealth(endpoint) {
+  try { const r = await fetch(endpoint + '/health', {signal: AbortSignal.timeout(1500)}); return r.ok ? r.json() : null; }
+  catch { return null; }
+}
+
+async function refresh() {
+  try {
+    const [stats, health, nodes, receipts, head] = await Promise.all([
+      j('/chain/stats'), j('/health'), j('/chain/nodes'), j('/chain/receipts'), j('/chain/head'),
+    ]);
+    $('meta').textContent = health.chain_id + ' · served by ' + health.address + ' · head ' + short(head.hash);
+    $('c-height').textContent = stats.height;
+    $('c-supply').textContent = dvt(stats.supply);
+    $('c-nodes').textContent = stats.nodes;
+    $('c-validators').textContent = stats.validators;
+    $('c-receipts').textContent = stats.receipts;
+    $('c-mempool').textContent = stats.mempool;
+    $('err').style.display = 'none';
+
+    const healths = await Promise.all(nodes.nodes.map(n => nodeHealth(n.endpoint)));
+    $('t-nodes').innerHTML = nodes.nodes.map((n, i) => {
+      const h = healths[i];
+      const load = h ? h.load : null;
+      const jailed = n.jailed_until > nodes.height;
+      const status = jailed ? '<span class="bad">jailed</span>'
+                   : (h ? '<span class="ok">online</span>' : '<span class="dim">unreachable</span>');
+      return '<tr><td class="addr">' + short(n.address) + '</td>'
+        + '<td class="dim">' + esc(n.endpoint) + '</td>'
+        + '<td>' + esc((n.hardware.vendor || '?') + ' ' + (n.hardware.vram_mb || '?') + 'MB') + '</td>'
+        + '<td>' + (load === null ? '<span class="dim">–</span>'
+            : '<span class="bar"><i style="width:' + Math.round(load * 100) + '%"></i></span>' + Math.round(load * 100) + '%') + '</td>'
+        + '<td><span class="bar rep"><i style="width:' + Math.round(n.reputation * 100) + '%"></i></span>' + n.reputation.toFixed(3) + '</td>'
+        + '<td>' + dvt(n.stake) + '</td>'
+        + '<td>' + n.jobs_done + '</td>'
+        + '<td class="dim">' + n.models.map(m => esc(m.split('::')[0].split('/').pop())).join('<br>') + '</td>'
+        + '<td>' + status + '</td></tr>';
+    }).join('') || '<tr><td colspan="9" class="dim">no nodes registered yet</td></tr>';
+
+    const start = Math.max(0, stats.height - 11);
+    const blocks = (await j('/chain/blocks?start=' + start + '&count=12')).blocks.reverse();
+    $('t-blocks').innerHTML = blocks.map(b =>
+      '<tr><td>' + b.height + '</td><td class="addr">' + short(b.proposer) + '</td>'
+      + '<td>' + (b.slot > 0 ? '<span class="warn">' + b.slot + '</span>' : '0') + '</td>'
+      + '<td>' + b.txs.length + '</td>'
+      + '<td class="dim">' + (b.height ? new Date(b.timestamp * 1000).toLocaleTimeString() : 'genesis') + '</td>'
+      + '<td class="dim">' + short(b.hash) + '</td></tr>').join('');
+
+    $('t-receipts').innerHTML = receipts.receipts.slice(-15).reverse().map(r => {
+      const verdict = !r.checked ? '<span class="dim">pending</span>'
+                    : (r.check_ok ? '<span class="ok">verified</span>' : '<span class="bad">SLASHED</span>');
+      return '<tr><td class="addr">' + short(r.receipt_hash) + '</td>'
+        + '<td class="addr">' + short(r.node) + '</td>'
+        + '<td class="dim">' + esc(r.model.split('::')[0].split('/').pop()) + '</td>'
+        + '<td>' + r.tokens + '</td><td>' + dvt(r.price_paid) + '</td>'
+        + '<td class="dim">' + (r.deterministic ? 'exact' : 'fuzzy') + '</td>'
+        + '<td>' + verdict + '</td></tr>';
+    }).join('') || '<tr><td colspan="7" class="dim">no receipts yet</td></tr>';
+  } catch (e) {
+    $('err').textContent = 'refresh failed: ' + e.message;
+    $('err').style.display = 'block';
+  }
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

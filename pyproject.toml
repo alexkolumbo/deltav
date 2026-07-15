@@ -25,6 +25,9 @@ deltav = "deltav.cli:main"
 [tool.setuptools.packages.find]
 include = ["deltav*"]
 
+[tool.setuptools.package-data]
+"deltav.node" = ["*.html"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

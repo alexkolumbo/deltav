@@ -107,6 +107,33 @@ def test_repeated_misses_jail_validator(alice, bob):
     assert any(addr == victim for addr, _ in chain.state.validators())
 
 
+def test_sibling_lower_slot_wins(genesis, alice, bob):
+    keys = keys_map(alice, bob)
+    chain = Blockchain(genesis)
+    for _ in range(30):
+        primary = chain.next_proposer(slot=0)
+        backup = chain.next_proposer(slot=1)
+        if primary != backup:
+            break
+        produce(chain, keys)
+    else:
+        raise AssertionError("validators never disagreed across slots")
+
+    slot0_block = chain.build_block(keys[primary], [], 100.0, slot=0)
+    slot1_block = chain.build_block(keys[backup], [], 101.0, slot=1)
+
+    # the fallback block lands first...
+    chain.add_block(slot1_block)
+    assert chain.head.slot == 1
+    # ...but the primary's block deterministically takes over
+    assert chain.replace_sibling(slot0_block)
+    assert chain.head.slot == 0 and chain.head.proposer == primary
+    # no bogus miss is recorded for the primary on the winning branch
+    assert chain.state.account(primary).misses == 0
+    # and the reverse never happens: a worse sibling cannot displace the head
+    assert not chain.replace_sibling(slot1_block)
+
+
 # ------------------------------------------------------------ unbonding
 
 def make_tx(kp, state, tx_type, payload):

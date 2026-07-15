@@ -7,11 +7,14 @@ pays for each job.
 """
 from __future__ import annotations
 
+import json
+import re
 import time
 import uuid
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 
 from ..config import ChainParams
 from ..crypto import KeyPair
@@ -92,7 +95,7 @@ class GatewayDaemon:
             return {"object": "list", "data": data}
 
         @app.post("/v1/chat/completions")
-        async def chat_completions(body: dict) -> dict:
+        async def chat_completions(body: dict):
             messages = body.get("messages") or []
             if not messages:
                 raise HTTPException(400, "messages required")
@@ -102,33 +105,77 @@ class GatewayDaemon:
                 result = await self.router.route(
                     prompt=prompt,
                     model=body.get("model", "auto"),
-                    max_tokens=int(body.get("max_tokens", 256)),
-                    temperature=float(body.get("temperature", 0.0)),
-                    seed=int(body.get("seed", 0)),
+                    max_tokens=int(body.get("max_tokens") or body.get("max_completion_tokens") or 256),
+                    temperature=float(body.get("temperature") or 0.0),
+                    seed=int(body.get("seed") or 0),
                 )
             except RouteError as exc:
                 raise HTTPException(503, str(exc))
+
+            completion_id = f"dvcmpl-{uuid.uuid4().hex[:24]}"
+            created = int(time.time())
+            usage = {
+                "prompt_tokens": result.tokens_in,
+                "completion_tokens": result.tokens_out,
+                "total_tokens": result.tokens_in + result.tokens_out,
+            }
+            meta = {
+                "node": result.node,
+                "endpoint": result.endpoint,
+                "receipt_tx": result.receipt_tx,
+                "attempts": result.attempts,
+            }
+
+            if body.get("stream"):
+                return StreamingResponse(
+                    _sse_chunks(completion_id, created, result.model_ref, result.text, usage),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
             return {
-                "id": f"dvcmpl-{uuid.uuid4().hex[:24]}",
+                "id": completion_id,
                 "object": "chat.completion",
-                "created": int(time.time()),
+                "created": created,
                 "model": result.model_ref,
                 "choices": [{
                     "index": 0,
                     "message": {"role": "assistant", "content": result.text},
                     "finish_reason": "stop",
                 }],
-                "usage": {
-                    "prompt_tokens": result.tokens_in,
-                    "completion_tokens": result.tokens_out,
-                    "total_tokens": result.tokens_in + result.tokens_out,
-                },
-                "deltav": {
-                    "node": result.node,
-                    "endpoint": result.endpoint,
-                    "receipt_tx": result.receipt_tx,
-                    "attempts": result.attempts,
-                },
+                "usage": usage,
+                "deltav": meta,
             }
 
         return app
+
+
+async def _sse_chunks(completion_id: str, created: int, model: str, text: str, usage: dict):
+    """OpenAI-compatible SSE stream.
+
+    The node protocol returns the full completion (it has to be hashed
+    into the on-chain receipt), so the gateway re-chunks it for clients
+    that require streaming. True token-level passthrough is a later phase.
+    """
+    def chunk(delta: dict, finish: str | None = None) -> str:
+        payload = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    yield chunk({"role": "assistant", "content": ""})
+    for piece in re.findall(r"\S+\s*", text) or [text]:
+        yield chunk({"content": piece})
+    final = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        "usage": usage,
+    }
+    yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"

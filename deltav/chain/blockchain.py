@@ -162,6 +162,30 @@ class Blockchain:
         )
         return block.sign(keypair)
 
+    def replace_sibling(self, block: Block) -> bool:
+        """Deterministic tie-break at equal height: a competing head with a
+        LOWER slot wins. Without this, timing jitter lets fallback blocks
+        beat the primary proposer's block and honest validators collect
+        bogus misses (and eventually get jailed for being merely busy)."""
+        if block.height != self.height or self.height == 0:
+            return False
+        head = self.head
+        if block.prev_hash != head.prev_hash:
+            return False
+        if (block.slot, block.hash) >= (head.slot, head.hash):
+            return False
+        try:
+            candidate = Blockchain(self.genesis)
+            for prior in self.blocks[1:-1]:
+                candidate._commit(prior)
+            candidate._commit(block)
+        except ConsensusError:
+            return False
+        self.blocks = candidate.blocks
+        self.state = candidate.state
+        self._rewrite_disk()
+        return True
+
     def replace(self, block_dicts: list[dict]) -> bool:
         """Adopt a longer valid chain (full re-validation from genesis)."""
         if len(block_dicts) <= len(self.blocks):

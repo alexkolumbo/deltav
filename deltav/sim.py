@@ -137,6 +137,6 @@ async def run_simulation(n_nodes: int = 3, duration: float = 25.0, base_port: in
         for s in servers:
             s.should_exit = True
         for t in server_tasks:
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
                 await asyncio.wait_for(t, timeout=5.0)
     return report

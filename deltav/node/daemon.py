@@ -17,6 +17,8 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 
 from ..chain import Blockchain, Mempool, Tx, TxType
 from ..chain.block import Block
@@ -118,6 +120,9 @@ class NodeDaemon:
     # ----------------------------------------------------------------- api
     def _build_app(self) -> FastAPI:
         app = FastAPI(title="Delta V node", version="0.1.0")
+        # The explorer page polls other nodes' /health cross-origin.
+        app.add_middleware(
+            CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
         @app.get("/health")
         async def health() -> dict:
@@ -163,6 +168,11 @@ class NodeDaemon:
                 await self._gossip("/p2p/block", body)
                 return {"status": "accepted", "height": self.chain.height}
             except ConsensusError:
+                if self.chain.replace_sibling(block):
+                    self._note_new_head()
+                    self.mempool.prune(self.chain.state)
+                    await self._gossip("/p2p/block", body)
+                    return {"status": "reorged", "height": self.chain.height}
                 if block.height > self.chain.height + 1 and from_url:
                     asyncio.get_running_loop().create_task(self._sync_from(from_url))
                     return {"status": "syncing"}
@@ -171,6 +181,30 @@ class NodeDaemon:
         @app.get("/p2p/peers")
         async def p2p_peers() -> dict:
             return {"peers": sorted(self.peers | {self.cfg.public_url()})}
+
+        @app.get("/genesis")
+        async def genesis() -> dict:
+            """Lets a fresh node join the network knowing only one seed URL."""
+            return self.chain.genesis.to_dict()
+
+        @app.get("/chain/stats")
+        async def chain_stats() -> dict:
+            state = self.chain.state
+            return {
+                "chain_id": self.chain.genesis.params.chain_id,
+                "height": state.height,
+                "supply": state.supply,
+                "nodes": len(state.nodes),
+                "validators": len(state.validators()),
+                "receipts": len(state.receipts),
+                "unchecked_receipts": len(state.unchecked_receipts()),
+                "mempool": len(self.mempool),
+                "peers": len(self.peers),
+            }
+
+        @app.get("/explorer", response_class=HTMLResponse)
+        async def explorer() -> str:
+            return (Path(__file__).parent / "explorer.html").read_text(encoding="utf-8")
 
         @app.get("/chain/head")
         async def chain_head() -> dict:
@@ -327,7 +361,12 @@ class NodeDaemon:
             if not self.cfg.produce:
                 continue
             elapsed = time.monotonic() - self._head_seen_at
-            open_slots = min(int(elapsed / params.block_time), params.max_slots)
+            # Slot 0 opens after block_time; fallback slot s (s >= 1) waits an
+            # extra half block_time of grace at (s + 1.5) * block_time, so a
+            # merely-busy primary proposer isn't raced by its backups.
+            ratio = elapsed / params.block_time
+            open_slots = 0 if ratio < 1.0 else 1 + max(0, int(ratio - 1.5))
+            open_slots = min(open_slots, params.max_slots)
             my_slot = next(
                 (s for s in range(open_slots)
                  if self.chain.next_proposer(slot=s) == self.address),

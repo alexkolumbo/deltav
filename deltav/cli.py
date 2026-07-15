@@ -51,10 +51,28 @@ def _cmd_genesis(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_node(args: argparse.Namespace) -> int:
+def _run_node(keypair, genesis: Genesis, cfg) -> None:
     import uvicorn
 
-    from .node import NodeConfig, NodeDaemon
+    from .node import NodeDaemon
+
+    daemon = NodeDaemon(keypair, genesis, cfg)
+    print(f"node     : {keypair.address}")
+    print(f"listen   : {cfg.public_url()}  (explorer: {cfg.public_url()}/explorer)")
+    print(f"backend  : {daemon.backend.name}  device: {daemon.device.vendor}/{daemon.device.name}")
+
+    async def run() -> None:
+        server = uvicorn.Server(uvicorn.Config(
+            daemon.app, host=cfg.host, port=cfg.port, log_level="warning"))
+        await daemon.start()
+        await server.serve()
+        await daemon.stop()
+
+    asyncio.run(run())
+
+
+def _cmd_node(args: argparse.Namespace) -> int:
+    from .node import NodeConfig
 
     keypair = load_or_create(args.wallet or wallet_path("node"))
     genesis = Genesis.load(args.genesis)
@@ -68,17 +86,54 @@ def _cmd_node(args: argparse.Namespace) -> int:
         stake=int(args.stake * DVT),
         data_dir=args.data_dir,
     )
-    daemon = NodeDaemon(keypair, genesis, cfg)
-    print(f"node {keypair.address} on {cfg.public_url()} backend={daemon.backend.name}")
+    _run_node(keypair, genesis, cfg)
+    return 0
 
-    async def run() -> None:
-        server = uvicorn.Server(uvicorn.Config(
-            daemon.app, host=cfg.host, port=cfg.port, log_level="warning"))
-        await daemon.start()
-        await server.serve()
-        await daemon.stop()
 
-    asyncio.run(run())
+def _cmd_join(args: argparse.Namespace) -> int:
+    """One command: wallet -> genesis from seed -> hardware -> model -> node."""
+    from pathlib import Path
+
+    from .bootstrap import describe_plan, download_model, fetch_genesis, pick_model_for_device
+    from .compute import detect_device
+    from .node import NodeConfig
+
+    if not args.seed and not args.genesis:
+        print("join needs --seed <node-url> or --genesis <file>", file=sys.stderr)
+        return 1
+    keypair = load_or_create(args.wallet or wallet_path("node"))
+    if args.genesis:
+        genesis = Genesis.load(args.genesis)
+    else:
+        print(f"fetching genesis from seed {args.seed} ...")
+        genesis = asyncio.run(fetch_genesis(args.seed))
+    print(f"chain    : {genesis.params.chain_id}")
+
+    device = detect_device()
+    spec = pick_model_for_device(device)
+    print(describe_plan(device, spec, args.backend))
+
+    if spec and not args.no_download and args.backend not in ("mock",):
+        print(f"downloading {spec.filename} ({spec.file_mb} MB) from HuggingFace ...")
+        path = download_model(spec)
+        print(f"model at : {path}" if path
+              else "huggingface_hub not installed — model will download on first load")
+
+    if keypair.address not in genesis.alloc and args.stake > 0:
+        print(f"NOTE: fund {keypair.address} first (deltav send), staking needs balance.")
+
+    data_dir = args.data_dir or str(Path.home() / ".deltav" / "node-data")
+    cfg = NodeConfig(
+        host=args.host,
+        port=args.port,
+        endpoint=args.endpoint,
+        peers=[args.seed] if args.seed else [],
+        backend=args.backend,
+        models=[spec.ref] if spec else [],
+        stake=int(args.stake * DVT),
+        data_dir=data_dir,
+    )
+    _run_node(keypair, genesis, cfg)
     return 0
 
 
@@ -106,6 +161,65 @@ def _cmd_sim(args: argparse.Namespace) -> int:
     from .sim import run_simulation
 
     asyncio.run(run_simulation(n_nodes=args.nodes, duration=args.duration, base_port=args.base_port))
+    return 0
+
+
+def _cmd_balance(args: argparse.Namespace) -> int:
+    import httpx
+
+    data = httpx.get(f"{args.node}/chain/account/{args.address}", timeout=10.0).json()
+    print(f"address : {args.address}")
+    print(f"balance : {data['balance'] / DVT:,.6f} DVT")
+    print(f"stake   : {data['stake'] / DVT:,.6f} DVT")
+    return 0
+
+
+def _cmd_send(args: argparse.Namespace) -> int:
+    import httpx
+
+    from .chain.transaction import Tx, TxType
+
+    keypair = load_wallet(args.wallet or wallet_path())
+    acc = httpx.get(f"{args.node}/chain/account/{keypair.address}", timeout=10.0).json()
+    tx = Tx(
+        type=TxType.TRANSFER.value,
+        sender=keypair.address,
+        nonce=int(acc["nonce"]),
+        payload={"to": args.to, "amount": int(args.amount * DVT)},
+    ).sign(keypair)
+    resp = httpx.post(f"{args.node}/tx", json=tx.to_dict(), timeout=10.0).json()
+    print(f"tx {tx.hash[:16]}... accepted={resp.get('accepted')}")
+    return 0
+
+
+def _cmd_network(args: argparse.Namespace) -> int:
+    import httpx
+
+    stats = httpx.get(f"{args.node}/chain/stats", timeout=10.0).json()
+    nodes = httpx.get(f"{args.node}/chain/nodes", timeout=10.0).json()["nodes"]
+    print(f"chain {stats['chain_id']}  height={stats['height']}  "
+          f"supply={stats['supply'] / DVT:,.0f} DVT  validators={stats['validators']}")
+    for n in nodes:
+        hw = n["hardware"]
+        jailed = " JAILED" if n.get("jailed_until", 0) > stats["height"] else ""
+        print(f"  {n['address'][:16]}... {n['endpoint']:<28} "
+              f"{hw.get('vendor', '?')}/{hw.get('vram_mb', '?')}MB "
+              f"rep={n['reputation']:.3f} stake={n['stake'] / DVT:,.0f} "
+              f"jobs={n['jobs_done']}{jailed}")
+        for m in n["models"]:
+            print(f"      - {m}")
+    return 0
+
+
+def _cmd_models(args: argparse.Namespace) -> int:
+    import httpx
+
+    data = httpx.get(f"{args.gateway}/v1/models", timeout=30.0).json()["data"]
+    for m in data:
+        d = m["deltav"]
+        served = f"{len(d['served_by'])} node(s)" if d["served_by"] else "no live nodes"
+        print(f"{m['id']}\n    {d['params_b']}B {d['quant']} "
+              f"~{d['vram_needed_mb']}MB quality={d['quality']} -> {served}")
     return 0
 
 
@@ -162,6 +276,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_node.add_argument("--stake", type=float, default=0.0, help="DVT to stake at startup")
     p_node.add_argument("--data-dir", default="", help="persist the chain to this directory")
     p_node.set_defaults(func=_cmd_node)
+
+    p_join = sub.add_parser(
+        "join", help="one-command node bootstrap: hardware -> model -> download -> run")
+    p_join.add_argument("--seed", default="", help="URL of any existing node (fetches genesis + peers)")
+    p_join.add_argument("--genesis", default="", help="local genesis file (instead of --seed fetch)")
+    p_join.add_argument("--wallet", default=None)
+    p_join.add_argument("--host", default="0.0.0.0")
+    p_join.add_argument("--port", type=int, default=9100)
+    p_join.add_argument("--endpoint", default="", help="public URL other nodes reach you at")
+    p_join.add_argument("--backend", default="auto")
+    p_join.add_argument("--stake", type=float, default=0.0)
+    p_join.add_argument("--no-download", action="store_true")
+    p_join.add_argument("--data-dir", default="")
+    p_join.set_defaults(func=_cmd_join)
+
+    p_bal = sub.add_parser("balance", help="show an account")
+    p_bal.add_argument("address")
+    p_bal.add_argument("--node", default="http://127.0.0.1:9100")
+    p_bal.set_defaults(func=_cmd_balance)
+
+    p_send = sub.add_parser("send", help="transfer DVT")
+    p_send.add_argument("--to", required=True)
+    p_send.add_argument("--amount", type=float, required=True, help="DVT")
+    p_send.add_argument("--wallet", default=None)
+    p_send.add_argument("--node", default="http://127.0.0.1:9100")
+    p_send.set_defaults(func=_cmd_send)
+
+    p_net = sub.add_parser("network", help="network overview from a node")
+    p_net.add_argument("--node", default="http://127.0.0.1:9100")
+    p_net.set_defaults(func=_cmd_network)
+
+    p_models = sub.add_parser("models", help="models served by the network")
+    p_models.add_argument("--gateway", default="http://127.0.0.1:9000")
+    p_models.set_defaults(func=_cmd_models)
 
     p_gw = sub.add_parser("gateway", help="run the OpenAI-compatible gateway")
     p_gw.add_argument("--genesis", default=None)
