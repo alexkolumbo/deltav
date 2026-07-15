@@ -39,11 +39,20 @@ def build_genesis_block(genesis: Genesis) -> Block:
 
 
 class Blockchain:
+    # Keep a full state copy every N blocks so fork validation restarts
+    # from the nearest checkpoint instead of genesis.
+    SNAPSHOT_INTERVAL = 32
+    MAX_SNAPSHOTS = 8
+
     def __init__(self, genesis: Genesis, path: str | Path | None = None):
         self.genesis = genesis
         self.path = Path(path) if path else None
         self.blocks: list[Block] = [build_genesis_block(genesis)]
         self.state: State = build_genesis_state(genesis)
+        # State as of blocks[-2] — makes sibling reorgs O(1 block).
+        self._prev_state: State | None = None
+        self._snapshots: dict[int, State] = {}
+        self.metrics = {"sibling_fast": 0, "replace_base_height": None}
         if self.path is not None:
             self._load_from_disk()
 
@@ -102,11 +111,35 @@ class Blockchain:
                 fh.write(json.dumps(block.to_dict(), sort_keys=True) + "\n")
         tmp.replace(self.path)
 
+    # ------------------------------------------------------------ snapshots
+    def _take_snapshot(self, height: int, state: State) -> None:
+        if height > 0 and height % self.SNAPSHOT_INTERVAL == 0:
+            self._snapshots[height] = state.clone()
+            for stale in sorted(self._snapshots)[: -self.MAX_SNAPSHOTS]:
+                del self._snapshots[stale]
+
+    def _state_at(self, height: int) -> State:
+        """Reconstruct the state after our own block at `height`, starting
+        from the nearest checkpoint at or below it."""
+        if height == self.height:
+            return self.state.clone()
+        if height == self.height - 1 and self._prev_state is not None:
+            return self._prev_state.clone()
+        base = max((h for h in self._snapshots if h <= height), default=0)
+        state = self._snapshots[base].clone() if base else build_genesis_state(self.genesis)
+        prev = self.blocks[base]
+        for block in self.blocks[base + 1 : height + 1]:
+            state = validate_block(state, prev, block)
+            prev = block
+        return state
+
     # -------------------------------------------------------------- growth
     def _commit(self, block: Block) -> None:
         new_state = validate_block(self.state, self.head, block)
+        self._prev_state = self.state
         self.blocks.append(block)
         self.state = new_state
+        self._take_snapshot(block.height, new_state)
 
     def add_block(self, block: Block) -> None:
         self._commit(block)
@@ -166,7 +199,9 @@ class Blockchain:
         """Deterministic tie-break at equal height: a competing head with a
         LOWER slot wins. Without this, timing jitter lets fallback blocks
         beat the primary proposer's block and honest validators collect
-        bogus misses (and eventually get jailed for being merely busy)."""
+        bogus misses (and eventually get jailed for being merely busy).
+
+        O(1 block): validates against the retained pre-head state."""
         if block.height != self.height or self.height == 0:
             return False
         head = self.head
@@ -175,36 +210,62 @@ class Blockchain:
         if (block.slot, block.hash) >= (head.slot, head.hash):
             return False
         try:
-            candidate = Blockchain(self.genesis)
-            for prior in self.blocks[1:-1]:
-                candidate._commit(prior)
-            candidate._commit(block)
+            prev_state = self._prev_state.clone() if self._prev_state is not None \
+                else self._state_at(self.height - 1)
+            new_state = validate_block(prev_state, self.blocks[-2], block)
         except ConsensusError:
             return False
-        self.blocks = candidate.blocks
-        self.state = candidate.state
+        self.blocks[-1] = block
+        self.state = new_state
+        if block.height in self._snapshots:
+            self._snapshots[block.height] = new_state.clone()
+        self.metrics["sibling_fast"] += 1
         self._rewrite_disk()
         return True
 
     def replace(self, block_dicts: list[dict]) -> bool:
-        """Adopt a longer valid chain (full re-validation from genesis)."""
+        """Adopt a longer valid chain, re-validating only past the common
+        ancestor (from the nearest state checkpoint, not genesis)."""
         if len(block_dicts) <= len(self.blocks):
             return False
         try:
-            candidate = Blockchain(self.genesis)
             incoming = [Block.from_dict(b) for b in block_dicts]
-            if incoming[0].hash != candidate.blocks[0].hash:
-                return False
-            for block in incoming[1:]:
-                candidate._commit(block)
-        except (ConsensusError, KeyError, ValueError):
+        except (KeyError, ValueError):
             return False
-        if candidate.height > self.height:
-            self.blocks = candidate.blocks
-            self.state = candidate.state
-            self._rewrite_disk()
-            return True
-        return False
+        if not incoming or incoming[0].hash != self.blocks[0].hash:
+            return False
+
+        common = 0
+        for ours, theirs in zip(self.blocks, incoming):
+            if ours.hash != theirs.hash:
+                break
+            common += 1
+        ancestor = common - 1  # >= 0, genesis always shared
+
+        try:
+            state = self._state_at(ancestor)
+            prev_block = incoming[ancestor]
+            prev_state: State | None = None
+            snapshots: dict[int, State] = {
+                h: s for h, s in self._snapshots.items() if h <= ancestor
+            }
+            for block in incoming[ancestor + 1 :]:
+                prev_state = state
+                state = validate_block(state, prev_block, block)
+                prev_block = block
+                if block.height % self.SNAPSHOT_INTERVAL == 0:
+                    snapshots[block.height] = state.clone()
+        except ConsensusError:
+            return False
+
+        self.blocks = incoming
+        self.state = state
+        self._prev_state = prev_state
+        self._snapshots = dict(sorted(snapshots.items())[-self.MAX_SNAPSHOTS:])
+        self.metrics["replace_base_height"] = max(
+            (h for h in self._snapshots if h <= ancestor), default=0)
+        self._rewrite_disk()
+        return True
 
     def blocks_from(self, start: int, count: int = 500) -> list[dict]:
         return [b.to_dict() for b in self.blocks[start : start + count]]

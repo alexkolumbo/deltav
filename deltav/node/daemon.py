@@ -15,10 +15,12 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import json
+
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from ..chain import Blockchain, Mempool, Tx, TxType
 from ..chain.block import Block
@@ -261,16 +263,27 @@ class NodeDaemon:
             return job
 
         @app.post("/infer")
-        async def infer(body: dict) -> dict:
+        async def infer(body: dict):
+            self._validate_infer_body(body)
+            if body.get("stream"):
+                return StreamingResponse(
+                    self._infer_stream_events(body),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
             return await self._handle_infer(body)
 
         return app
 
     # ------------------------------------------------------------- serving
-    async def _handle_infer(self, body: dict) -> dict:
+    @staticmethod
+    def _validate_infer_body(body: dict) -> None:
         for key in ("prompt", "model", "requester", "requester_pubkey", "requester_sig", "price_limit"):
             if key not in body:
                 raise HTTPException(400, f"missing field {key!r}")
+
+    async def _handle_infer(self, body: dict) -> dict:
+        self._validate_infer_body(body)
         prompt = body["prompt"]
         model_ref = body["model"]
         max_tokens = int(body.get("max_tokens", 256))
@@ -319,6 +332,85 @@ class NodeDaemon:
             "node": self.address,
             "backend": self.backend.name,
         }
+
+    async def _infer_stream_events(self, body: dict):
+        """SSE token stream. The receipt is submitted after the last token —
+        it hashes the full output, so streaming changes nothing on-chain."""
+        prompt = body["prompt"]
+        model_ref = body["model"]
+        max_tokens = int(body.get("max_tokens", 256))
+        temperature = float(body.get("temperature", 0.0))
+        seed = int(body.get("seed", 0))
+        request_hash = sha256_hex(canonical_json(
+            {"prompt": prompt, "model": model_ref, "max_tokens": max_tokens, "seed": seed}
+        ))
+        request = InferRequest(prompt=prompt, model_ref=model_ref,
+                               max_tokens=max_tokens, temperature=temperature, seed=seed)
+
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        done = object()
+
+        def produce() -> None:
+            try:
+                for item in self.backend.infer_stream(request):
+                    loop.call_soon_threadsafe(queue.put_nowait, item)
+            except Exception as exc:  # surfaced to the client as an SSE event
+                loop.call_soon_threadsafe(queue.put_nowait, exc)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, done)
+
+        self.active_jobs += 1
+        producer = asyncio.create_task(asyncio.to_thread(produce))
+        pieces: list[str] = []
+        try:
+            while True:
+                item = await queue.get()
+                if item is done:
+                    break
+                if isinstance(item, Exception):
+                    yield f"data: {json.dumps({'error': str(item)})}\n\n"
+                    return
+                if isinstance(item, str):
+                    pieces.append(item)
+                    yield f"data: {json.dumps({'token': item}, ensure_ascii=False)}\n\n"
+                    continue
+                # final InferResult
+                result = item
+                output_hash = sha256_hex(result.text.encode())
+                self.jobs[request_hash] = {
+                    "prompt": prompt, "model": model_ref, "max_tokens": max_tokens,
+                    "temperature": temperature, "seed": seed, "output_hash": output_hash,
+                }
+                receipt = self._make_tx(TxType.INFERENCE_RECEIPT, {
+                    "requester": body["requester"],
+                    "requester_pubkey": body["requester_pubkey"],
+                    "requester_sig": body["requester_sig"],
+                    "request_hash": request_hash,
+                    "output_hash": output_hash,
+                    "model": model_ref,
+                    "seed": seed,
+                    "tokens_in": result.tokens_in,
+                    "tokens_out": result.tokens_out,
+                    "price_limit": int(body["price_limit"]),
+                    "deterministic": result.deterministic and self.backend.deterministic,
+                })
+                await self.submit_tx(receipt)
+                final = {
+                    "done": True,
+                    "text": result.text,
+                    "tokens_in": result.tokens_in,
+                    "tokens_out": result.tokens_out,
+                    "output_hash": output_hash,
+                    "request_hash": request_hash,
+                    "receipt_tx": receipt.hash,
+                    "node": self.address,
+                    "backend": self.backend.name,
+                }
+                yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
+        finally:
+            self.active_jobs -= 1
+            producer.cancel()
 
     # --------------------------------------------------------------- loops
     async def start(self) -> None:

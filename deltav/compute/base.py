@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Iterator, Union
 
 
 @dataclass
@@ -69,6 +70,17 @@ class ComputeBackend(ABC):
     def infer(self, request: InferRequest) -> InferResult:
         """Run one completion. Must honor request.seed for determinism."""
 
+    def infer_stream(self, request: InferRequest) -> Iterator[Union[str, InferResult]]:
+        """Yield text pieces as they are generated, then the final InferResult.
+
+        The final result's `text` MUST equal the concatenated pieces — the
+        on-chain receipt hashes the full output. Default: one piece.
+        """
+        result = self.infer(request)
+        if result.text:
+            yield result.text
+        yield result
+
     def unload(self, model_ref: str | None = None) -> None:  # noqa: B027 - optional hook
         """Free memory; default no-op."""
 
@@ -88,7 +100,8 @@ def register_backend(cls: type[ComputeBackend]) -> type[ComputeBackend]:
 def make_backend(name: str = "auto") -> ComputeBackend:
     """Instantiate a backend by name, or the best available one for "auto"."""
     # Imports here so optional heavy deps never load unless needed.
-    from . import asic, groq, llamacpp, mock  # noqa: F401  (registration side effect)
+    # Order = "auto" preference: local GPU first, API relays after, mock last.
+    from . import llamacpp, groq, asic, mock  # noqa: F401  (registration side effect)
 
     if name != "auto":
         for cls in BACKENDS:

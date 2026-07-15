@@ -76,6 +76,36 @@ class LlamaCppBackend(ComputeBackend):
             deterministic=request.temperature == 0.0,
         )
 
+    def infer_stream(self, request: InferRequest):
+        self.load(request.model_ref)
+        model = self._models[request.model_ref]
+        pieces: list[str] = []
+        for chunk in model.create_completion(
+            request.prompt,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            seed=request.seed,
+            stream=True,
+        ):
+            piece = chunk["choices"][0].get("text", "")
+            if piece:
+                pieces.append(piece)
+                yield piece
+        text = "".join(pieces)
+        try:
+            tokens_in = len(model.tokenize(request.prompt.encode()))
+        except Exception:
+            tokens_in = max(1, len(request.prompt.split()))
+        yield InferResult(
+            text=text,
+            tokens_in=tokens_in,
+            tokens_out=max(1, len(pieces)),
+            seed=request.seed,
+            model_ref=request.model_ref,
+            backend=self.name,
+            deterministic=request.temperature == 0.0,
+        )
+
     def unload(self, model_ref: str | None = None) -> None:
         if model_ref is None:
             self._models.clear()

@@ -164,6 +164,29 @@ class GatewayDaemon:
             tools = body.get("tools") or None
             prompt = render_prompt(messages, tools)
             await self.router.refresh(self.node_urls)
+
+            if body.get("stream") and not tools:
+                # True end-to-end streaming: tokens flow node -> gateway ->
+                # client as they are generated. (With tools we must see the
+                # full text to parse <tool_call>, so that path buffers.)
+                try:
+                    spec = self.router.resolve_model(body.get("model", "auto"))
+                    upstream = self.router.route_stream(
+                        prompt=prompt, model=spec.ref,
+                        max_tokens=int(body.get("max_tokens") or body.get("max_completion_tokens") or 256),
+                        temperature=float(body.get("temperature") or 0.0),
+                        seed=int(body.get("seed") or 0),
+                    )
+                    first = await upstream.__anext__()  # fail as HTTP 503, not mid-stream
+                except (RouteError, StopAsyncIteration) as exc:
+                    raise HTTPException(503, str(exc))
+                return StreamingResponse(
+                    _sse_passthrough(f"dvcmpl-{uuid.uuid4().hex[:24]}", int(time.time()),
+                                     spec.ref, first, upstream),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                )
+
             try:
                 result = await self.router.route(
                     prompt=prompt,
@@ -225,6 +248,46 @@ class GatewayDaemon:
             }
 
         return app
+
+
+def _chunk_line(completion_id: str, created: int, model: str,
+                delta: dict, finish: str | None = None, extra: dict | None = None) -> str:
+    payload = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+    }
+    if extra:
+        payload.update(extra)
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+async def _sse_passthrough(completion_id: str, created: int, model: str, first, upstream):
+    """Relay live ("token", str) / ("final", RouteResult) events as OpenAI chunks."""
+    yield _chunk_line(completion_id, created, model, {"role": "assistant", "content": ""})
+
+    async def events():
+        yield first
+        async for event in upstream:
+            yield event
+
+    async for kind, value in events():
+        if kind == "token":
+            if value:
+                yield _chunk_line(completion_id, created, model, {"content": value})
+            continue
+        usage = {
+            "prompt_tokens": value.tokens_in,
+            "completion_tokens": value.tokens_out,
+            "total_tokens": value.tokens_in + value.tokens_out,
+        }
+        meta = {"node": value.node, "endpoint": value.endpoint,
+                "receipt_tx": value.receipt_tx, "attempts": value.attempts}
+        yield _chunk_line(completion_id, created, model, {}, "stop",
+                          extra={"usage": usage, "deltav": meta})
+    yield "data: [DONE]\n\n"
 
 
 async def _sse_chunks(completion_id: str, created: int, model: str,

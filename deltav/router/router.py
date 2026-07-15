@@ -11,6 +11,7 @@ with an INFERENCE_RECEIPT and nothing else.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -97,6 +98,10 @@ class SmartRouter:
     def _servable(self, spec: ModelSpec, node: NodeView) -> bool:
         if spec.ref in node.models or spec.repo_id in node.models:
             return True
+        # API-relayed models (Groq etc.) have no file size — only nodes
+        # that explicitly announced them can serve them.
+        if spec.file_mb <= 0:
+            return False
         return node.vram_mb > 0 and estimate_vram_mb(spec) <= node.vram_mb
 
     def resolve_model(self, model: str) -> ModelSpec:
@@ -115,9 +120,15 @@ class SmartRouter:
                     return spec
             raise RouteError("no catalog model is servable by any live node")
         spec = self.catalog.by_ref(model)
-        if spec is None:
-            raise RouteError(f"model {model!r} is not in the catalog")
-        return spec
+        if spec is not None:
+            return spec
+        # Not in the catalog, but if live nodes announce exactly this ref
+        # (e.g. a Groq relay), synthesize a spec for it.
+        if any(model in n.models for n in live):
+            repo, _, filename = model.partition("::")
+            return ModelSpec(repo_id=repo, filename=filename, family="external",
+                             params_b=0.0, quant="api", file_mb=0, quality=0.5)
+        raise RouteError(f"model {model!r} is not in the catalog and no live node announces it")
 
     def rank_nodes(self, spec: ModelSpec) -> list[NodeView]:
         candidates = [n for n in self.nodes if self._servable(spec, n)]
@@ -129,6 +140,25 @@ class SmartRouter:
         return [n for n in ranked if score_node(n, spec.ref, self.chain_height) > float("-inf")]
 
     # ------------------------------------------------------------ dispatch
+    def _infer_body(self, node: NodeView, spec: ModelSpec, prompt: str,
+                    max_tokens: int, temperature: float, seed: int) -> dict[str, Any]:
+        req_hash = request_hash_for(prompt, spec.ref, max_tokens, seed)
+        price_limit = (max_tokens + len(prompt.split()) + 64) * self.price_per_token * 2
+        auth_sig = self.requester.sign(
+            receipt_auth_bytes(req_hash, node.address, spec.ref, price_limit)
+        )
+        return {
+            "prompt": prompt,
+            "model": spec.ref,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "seed": seed,
+            "requester": self.requester.address,
+            "requester_pubkey": self.requester.public_hex,
+            "requester_sig": auth_sig,
+            "price_limit": price_limit,
+        }
+
     async def route(
         self,
         prompt: str,
@@ -144,22 +174,7 @@ class SmartRouter:
 
         errors: list[str] = []
         for attempt, node in enumerate(candidates, start=1):
-            req_hash = request_hash_for(prompt, spec.ref, max_tokens, seed)
-            price_limit = (max_tokens + len(prompt.split()) + 64) * self.price_per_token * 2
-            auth_sig = self.requester.sign(
-                receipt_auth_bytes(req_hash, node.address, spec.ref, price_limit)
-            )
-            body: dict[str, Any] = {
-                "prompt": prompt,
-                "model": spec.ref,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "seed": seed,
-                "requester": self.requester.address,
-                "requester_pubkey": self.requester.public_hex,
-                "requester_sig": auth_sig,
-                "price_limit": price_limit,
-            }
+            body = self._infer_body(node, spec, prompt, max_tokens, temperature, seed)
             try:
                 resp = await self.client.post(f"{node.endpoint}/infer", json=body, timeout=300.0)
                 resp.raise_for_status()
@@ -178,4 +193,64 @@ class SmartRouter:
                 receipt_tx=data.get("receipt_tx"),
                 attempts=attempt,
             )
+        raise RouteError("all candidate nodes failed: " + "; ".join(errors))
+
+    async def route_stream(
+        self,
+        prompt: str,
+        model: str = "auto",
+        max_tokens: int = 256,
+        temperature: float = 0.0,
+        seed: int = 0,
+    ):
+        """End-to-end token streaming: yields ("token", str) pieces as the
+        node generates them, then ("final", RouteResult). Failover happens
+        only before the first token — a stream broken mid-generation is an
+        error (the receipt already committed to that output)."""
+        spec = self.resolve_model(model)
+        candidates = self.rank_nodes(spec)
+        if not candidates:
+            raise RouteError(f"no node can serve {spec.ref}")
+
+        errors: list[str] = []
+        for attempt, node in enumerate(candidates, start=1):
+            body = self._infer_body(node, spec, prompt, max_tokens, temperature, seed)
+            body["stream"] = True
+            pieces: list[str] = []
+            try:
+                async with self.client.stream(
+                    "POST", f"{node.endpoint}/infer", json=body, timeout=300.0
+                ) as resp:
+                    if resp.status_code != 200:
+                        errors.append(f"{node.address[:12]}: http {resp.status_code}")
+                        node.alive = False
+                        continue
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        event = json.loads(line[len("data: "):])
+                        if "error" in event:
+                            raise RouteError(f"node error mid-stream: {event['error']}")
+                        if event.get("done"):
+                            yield ("final", RouteResult(
+                                text=event.get("text", "".join(pieces)),
+                                model_ref=spec.ref,
+                                node=node.address,
+                                endpoint=node.endpoint,
+                                tokens_in=int(event.get("tokens_in", 0)),
+                                tokens_out=int(event.get("tokens_out", 0)),
+                                receipt_tx=event.get("receipt_tx"),
+                                attempts=attempt,
+                            ))
+                            return
+                        token = event.get("token", "")
+                        pieces.append(token)
+                        yield ("token", token)
+            except httpx.HTTPError as exc:
+                if pieces:
+                    raise RouteError(f"stream broke mid-generation: {exc}") from exc
+                errors.append(f"{node.address[:12]}: {exc}")
+                node.alive = False
+                continue
+            raise RouteError("node stream ended without a final event")
         raise RouteError("all candidate nodes failed: " + "; ".join(errors))

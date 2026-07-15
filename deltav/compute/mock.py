@@ -73,5 +73,11 @@ class MockBackend(ComputeBackend):
             backend=self.name,
         )
 
+    def infer_stream(self, request: InferRequest):
+        result = self.infer(request)
+        for piece in re.findall(r"\S+\s*", result.text) or [result.text]:
+            yield piece
+        yield result
+
     def loaded_models(self) -> list[str]:
         return sorted(self._loaded)

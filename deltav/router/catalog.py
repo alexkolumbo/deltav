@@ -28,7 +28,8 @@ class ModelSpec:
 
     @property
     def ref(self) -> str:
-        return f"{self.repo_id}::{self.filename}"
+        # API-relayed models (no concrete file) are referenced by repo_id alone.
+        return f"{self.repo_id}::{self.filename}" if self.filename else self.repo_id
 
     def to_dict(self) -> dict:
         d = asdict(self)
