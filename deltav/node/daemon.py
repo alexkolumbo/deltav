@@ -277,6 +277,7 @@ class NodeDaemon:
         @app.post("/infer")
         async def infer(body: dict):
             self._validate_infer_body(body)
+            self._check_model(str(body.get("model", "")))
             self._check_price(body, int(body.get("max_tokens", 256))
                               + len(str(body.get("prompt", "")).split()))
             if body.get("stream"):
@@ -300,6 +301,12 @@ class NodeDaemon:
         if int(body.get("price_limit", 0)) < expected_tokens * my_price:
             raise HTTPException(
                 402, f"price limit too low: this node asks {my_price} udvt/token")
+
+    def _check_model(self, model_ref: str) -> None:
+        """Fixed-model backends (llama-server) can't load arbitrary refs."""
+        if not self.backend.dynamic_models and model_ref not in self.cfg.models:
+            raise HTTPException(
+                409, f"this node serves only its announced models: {self.cfg.models}")
 
     # ------------------------------------------------------------- serving
     @staticmethod
@@ -367,6 +374,7 @@ class NodeDaemon:
                 raise HTTPException(400, f"missing field {key!r}")
         if not self.backend.supports_embeddings:
             raise HTTPException(501, f"backend {self.backend.name} has no embedding support")
+        self._check_model(str(body.get("model", "")))
         texts = [str(t) for t in body["texts"]][:64]
         if not texts:
             raise HTTPException(400, "texts must be a non-empty list")
@@ -528,7 +536,10 @@ class NodeDaemon:
             await asyncio.sleep(params.block_time * 2)
             state = self.chain.state
             info = state.nodes.get(self.address)
-            hardware = self.device.to_dict() | {"backend": self.backend.name}
+            hardware = self.device.to_dict() | {
+                "backend": self.backend.name,
+                "dynamic_models": self.backend.dynamic_models,
+            }
             registered = (
                 info is not None
                 and info.endpoint == self.cfg.public_url()

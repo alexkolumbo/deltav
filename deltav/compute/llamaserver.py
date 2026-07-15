@@ -31,6 +31,7 @@ class LlamaServerBackend(ComputeBackend):
     name = "llamaserver"
     vendors = ("amd", "nvidia", "intel", "apple", "cpu")
     deterministic = False
+    dynamic_models = False  # the server pre-loads ONE model at startup
 
     def __init__(self, base_url: str | None = None, client: httpx.Client | None = None):
         self.base_url = (base_url or os.environ.get("LLAMA_SERVER_URL") or DEFAULT_URL).rstrip("/")
@@ -51,6 +52,13 @@ class LlamaServerBackend(ComputeBackend):
     # raw completion before the model starts speaking for the other roles.
     STOP = ["\nuser:", "\nsystem:", "\nassistant:", "\ntool ("]
 
+    @staticmethod
+    def _raise_with_detail(resp: httpx.Response) -> None:
+        """Surface llama-server's error message (e.g. context overflow)
+        instead of a bare 500 — the router and logs need the reason."""
+        if resp.status_code >= 400:
+            raise RuntimeError(f"llama-server {resp.status_code}: {resp.text[:300]}")
+
     def infer(self, request: InferRequest) -> InferResult:
         resp = self.client.post(f"{self.base_url}/completion", json={
             "prompt": request.prompt,
@@ -60,7 +68,7 @@ class LlamaServerBackend(ComputeBackend):
             "stop": self.STOP,
             "cache_prompt": False,
         })
-        resp.raise_for_status()
+        self._raise_with_detail(resp)
         data = resp.json()
         return InferResult(
             text=data.get("content", ""),
@@ -85,7 +93,9 @@ class LlamaServerBackend(ComputeBackend):
             "cache_prompt": False,
             "stream": True,
         }) as resp:
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                resp.read()
+                self._raise_with_detail(resp)
             for line in resp.iter_lines():
                 if not line.startswith("data: "):
                     continue
@@ -117,7 +127,7 @@ class LlamaServerBackend(ComputeBackend):
     def embed(self, request: EmbedRequest) -> EmbedResult:
         resp = self.client.post(f"{self.base_url}/embedding",
                                 json={"content": request.texts})
-        resp.raise_for_status()
+        self._raise_with_detail(resp)
         data = resp.json()
         rows = data if isinstance(data, list) else [data]
         vectors = []

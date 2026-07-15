@@ -53,6 +53,42 @@ def test_overpriced_receipt_rejected_by_limit(genesis, alice, bob):
                                        price_limit=1000), 2)
 
 
+def test_fixed_model_node_never_gets_cold_start_jobs():
+    """A llama-server node (one pre-loaded model) must not be routed
+    models it didn't announce, even when they fit its VRAM."""
+    from deltav.router import Catalog, SmartRouter
+    from deltav.crypto import KeyPair
+
+    router = SmartRouter(Catalog(), KeyPair.generate(),
+                         httpx.AsyncClient(), price_per_token=10)
+    spec = Catalog().by_ref(CHAT_MODEL)
+    fixed = NodeView(address="dv1fixed", endpoint="http://n:1", vram_mb=12282,
+                     models=[EMBED_MODEL], reputation=0.9, stake=0, last_seen=0,
+                     dynamic=False)
+    flexible = NodeView(address="dv1flex", endpoint="http://n:2", vram_mb=12282,
+                        models=[], reputation=0.9, stake=0, last_seen=0,
+                        dynamic=True)
+    assert not router._servable(spec, fixed)
+    assert router._servable(spec, flexible)
+    # announced model is always servable, fixed or not
+    embed_spec = Catalog().by_ref(EMBED_MODEL)
+    assert router._servable(embed_spec, fixed)
+
+
+async def test_node_refuses_unannounced_model_on_fixed_backend(embed_net, carol):
+    daemon = embed_net["daemon"]
+    daemon.backend.dynamic_models = False
+    try:
+        resp = await embed_net["client"].post(f"{URL}/infer", json={
+            "prompt": "x", "model": "some/other-model",
+            "requester": carol.address, "requester_pubkey": carol.public_hex,
+            "requester_sig": "00", "price_limit": 10**9,
+        })
+        assert resp.status_code == 409
+    finally:
+        daemon.backend.dynamic_models = True
+
+
 def test_router_prefers_cheaper_node():
     base = dict(endpoint="http://n:1", vram_mb=12282, models=[CHAT_MODEL],
                 reputation=0.5, stake=0, last_seen=0)

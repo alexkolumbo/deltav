@@ -93,6 +93,7 @@ class SmartRouter:
                     last_seen=int(n.get("last_seen", 0)),
                     active=bool(n.get("active", True)),
                     price_per_token=int(n.get("price_per_token", 0)),
+                    dynamic=bool(n.get("hardware", {}).get("dynamic_models", True)),
                 )
             break  # one healthy chain source is enough for the registry
         for node in registry.values():
@@ -112,6 +113,9 @@ class SmartRouter:
         # API-relayed models (Groq etc.) have no file size — only nodes
         # that explicitly announced them can serve them.
         if spec.file_mb <= 0:
+            return False
+        # Fixed-model nodes (llama-server) can't cold-load anything else.
+        if not node.dynamic:
             return False
         return node.vram_mb > 0 and estimate_vram_mb(spec) <= node.vram_mb
 

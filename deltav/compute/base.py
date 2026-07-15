@@ -82,6 +82,11 @@ class ComputeBackend(ABC):
     vendors: tuple[str, ...] = ()
     # Whether identical requests produce identical outputs (spot-check mode).
     deterministic: bool = True
+    # Whether the backend can load arbitrary model refs on demand.
+    # False = it serves a fixed, pre-loaded model set (e.g. llama-server):
+    # the node then only accepts jobs for its announced models, and the
+    # router never cold-start-routes other models to it.
+    dynamic_models: bool = True
 
     @classmethod
     @abstractmethod

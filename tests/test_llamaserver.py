@@ -53,6 +53,20 @@ def test_infer_stream_collects_pieces():
     assert final.tokens_in == 3 and final.tokens_out == 2
 
 
+def test_server_error_detail_is_surfaced():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {
+            "message": "request (5402 tokens) exceeds the available context size (4096 tokens)"}})
+
+    import pytest
+    with pytest.raises(RuntimeError, match="exceeds the available context"):
+        make_backend(handler).infer(InferRequest(prompt="long", model_ref=MODEL))
+
+
+def test_fixed_models_flag():
+    assert LlamaServerBackend.dynamic_models is False
+
+
 def test_embed_handles_single_and_nested():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=[
