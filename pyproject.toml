@@ -27,6 +27,7 @@ include = ["deltav*"]
 
 [tool.setuptools.package-data]
 "deltav.node" = ["*.html"]
+"deltav.gateway" = ["*.html"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

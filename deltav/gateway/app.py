@@ -13,9 +13,11 @@ import re
 import time
 import uuid
 
+from pathlib import Path
+
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from ..config import ChainParams
 from ..crypto import KeyPair
@@ -151,6 +153,11 @@ class GatewayDaemon:
         async def health() -> dict:
             return {"gateway": self.keypair.address, "nodes": self.node_urls}
 
+        @app.get("/chat", response_class=HTMLResponse)
+        async def chat_ui() -> str:
+            """Mobile-first chat frontend served straight off the gateway."""
+            return (Path(__file__).parent / "chat.html").read_text(encoding="utf-8")
+
         @app.get("/network")
         async def network() -> dict:
             await self.router.refresh(self.node_urls)
@@ -178,6 +185,7 @@ class GatewayDaemon:
                     "owned_by": "deltav",
                     "deltav": {
                         "family": spec.family, "params_b": spec.params_b, "quant": spec.quant,
+                        "kind": spec.kind,
                         "vram_needed_mb": estimate_vram_mb(spec), "quality": spec.quality,
                         "served_by": servers,
                     },

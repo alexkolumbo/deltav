@@ -292,6 +292,19 @@ def _cmd_agent(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_tgbot(args: argparse.Namespace) -> int:
+    import os
+
+    if args.token:
+        os.environ["TELEGRAM_BOT_TOKEN"] = args.token
+    os.environ["DELTAV_GATEWAY"] = args.gateway
+    if args.allow:
+        os.environ["DELTAV_ALLOW"] = args.allow
+    from .tgbot import main as tg_main
+
+    return tg_main()
+
+
 def _cmd_chat(args: argparse.Namespace) -> int:
     import httpx
 
@@ -425,6 +438,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_agent.add_argument("--session", default="",
                          help="session id: enables remember/recall memory tools")
     p_agent.set_defaults(func=_cmd_agent)
+
+    p_tg = sub.add_parser("tgbot", help="Telegram bot bridge to a gateway")
+    p_tg.add_argument("--token", default="", help="or TELEGRAM_BOT_TOKEN env")
+    p_tg.add_argument("--gateway", default="http://127.0.0.1:9000")
+    p_tg.add_argument("--allow", default="", help="comma-separated Telegram user ids")
+    p_tg.set_defaults(func=_cmd_tgbot)
 
     p_chat = sub.add_parser("chat", help="one-shot chat through the network")
     p_chat.add_argument("prompt")

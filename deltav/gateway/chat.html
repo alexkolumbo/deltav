@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ΔV Chat</title>
+<style>
+  :root { --bg:#0b0d10; --panel:#14181d; --line:#232a32; --fg:#e6edf3; --dim:#8b98a5;
+          --accent:#ff7a1a; --ok:#3fb950; --user:#1c2733; }
+  * { box-sizing:border-box; margin:0; }
+  html,body { height:100%; }
+  body { background:var(--bg); color:var(--fg);
+         font:16px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;
+         display:flex; flex-direction:column; }
+  header { display:flex; gap:8px; align-items:center; padding:10px 12px;
+           background:var(--panel); border-bottom:1px solid var(--line);
+           position:sticky; top:0; z-index:5; }
+  header .logo { color:var(--accent); font-weight:700; letter-spacing:.04em; }
+  header select { flex:1; min-width:0; background:var(--bg); color:var(--fg);
+                  border:1px solid var(--line); border-radius:8px; padding:7px 8px; font-size:13px; }
+  header button, .iconbtn { background:var(--bg); color:var(--dim); border:1px solid var(--line);
+                  border-radius:8px; padding:7px 10px; font-size:13px; }
+  #agent-toggle.on { color:var(--accent); border-color:var(--accent); }
+  #status { width:9px; height:9px; border-radius:50%; background:var(--dim); flex:none; }
+  #status.ok { background:var(--ok); }
+  main { flex:1; overflow-y:auto; padding:14px 12px 8px; -webkit-overflow-scrolling:touch; }
+  .msg { max-width:92%; margin-bottom:10px; padding:10px 13px; border-radius:14px;
+         white-space:pre-wrap; word-wrap:break-word; }
+  .msg.user { background:var(--user); margin-left:auto; border-bottom-right-radius:4px; }
+  .msg.bot  { background:var(--panel); border:1px solid var(--line); border-bottom-left-radius:4px; }
+  .msg.bot.pending::after { content:"▍"; color:var(--accent); animation:blink 1s infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+  .meta { font-size:11px; color:var(--dim); margin:-4px 0 12px 4px; }
+  .step { font-size:12px; color:var(--dim); border-left:2px solid var(--accent);
+          padding:2px 8px; margin:4px 0 4px 4px; }
+  footer { display:flex; gap:8px; padding:10px 12px calc(10px + env(safe-area-inset-bottom));
+           background:var(--panel); border-top:1px solid var(--line); position:sticky; bottom:0; }
+  footer textarea { flex:1; resize:none; background:var(--bg); color:var(--fg);
+                    border:1px solid var(--line); border-radius:12px; padding:10px 12px;
+                    font:16px/1.4 inherit; max-height:120px; }
+  footer button { background:var(--accent); color:#000; border:none; border-radius:12px;
+                  padding:0 18px; font-size:15px; font-weight:600; }
+  footer button:disabled { opacity:.4; }
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">&Delta;V</span>
+  <span id="status" title="network"></span>
+  <select id="model"><option value="auto">auto</option></select>
+  <button id="agent-toggle" class="iconbtn" title="агент с инструментами">🛠</button>
+  <button id="reset" class="iconbtn" title="новый диалог">↺</button>
+</header>
+<main id="log"></main>
+<footer>
+  <textarea id="input" rows="1" placeholder="Сообщение…" enterkeyhint="send"></textarea>
+  <button id="send">➤</button>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const log = $("log"), input = $("input"), sendBtn = $("send");
+let messages = [];
+let busy = false;
+let agentMode = false;
+const sessionId = localStorage.dvSession || (localStorage.dvSession = "web-" + Math.random().toString(36).slice(2, 10));
+
+function el(cls, text) {
+  const div = document.createElement("div");
+  div.className = cls;
+  if (text) div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return div;
+}
+
+async function loadModels() {
+  try {
+    const data = await (await fetch("/v1/models")).json();
+    $("status").className = "ok";
+    for (const m of data.data) {
+      if (!m.deltav.served_by.length || m.deltav.kind !== "chat") continue;
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.id.split("::")[0].split("/").pop() + " · " + m.deltav.served_by.length + " node";
+      $("model").appendChild(opt);
+    }
+  } catch (e) { $("status").className = ""; }
+}
+
+async function sendChat(text) {
+  messages.push({ role: "user", content: text });
+  const bubble = el("msg bot pending", "");
+  let acc = "", meta = null;
+  const resp = await fetch("/v1/chat/completions", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: $("model").value, messages, stream: true, max_tokens: 1024 }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    bubble.className = "msg bot";
+    bubble.textContent = "⚠ " + (err.detail || resp.status);
+    messages.pop();
+    return;
+  }
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  const t0 = Date.now();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split("\n"); buf = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+      const c = JSON.parse(line.slice(6));
+      const delta = c.choices?.[0]?.delta?.content;
+      if (delta) { acc += delta; bubble.textContent = acc; log.scrollTop = log.scrollHeight; }
+      if (c.usage) meta = c;
+    }
+  }
+  bubble.className = "msg bot";
+  messages.push({ role: "assistant", content: acc });
+  if (meta) {
+    const s = ((Date.now() - t0) / 1000).toFixed(1);
+    el("meta", `${meta.model.split("::")[0].split("/").pop()} · ${meta.usage.completion_tokens} ток · ${s}с · нода ${meta.deltav.node.slice(0, 10)}… · чек ${String(meta.deltav.receipt_tx).slice(0, 8)}`);
+  }
+}
+
+async function sendAgent(text) {
+  const bubble = el("msg bot pending", "агент думает…");
+  const resp = await fetch("/v1/agents/run", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ task: text, model: $("model").value, max_steps: 6, session_id: sessionId }),
+  });
+  const d = await resp.json();
+  bubble.remove();
+  if (!resp.ok) { el("msg bot", "⚠ " + (d.detail || resp.status)); return; }
+  for (const s of d.steps || []) {
+    el("step", `🛠 ${s.tool}(${JSON.stringify(s.arguments)}) → ${s.result.slice(0, 160)}`);
+  }
+  el("msg bot", d.answer);
+  el("meta", `агент · ${d.model_calls} вызовов модели · ${(d.steps || []).length} инструментов · сессия ${sessionId}`);
+}
+
+async function onSend() {
+  const text = input.value.trim();
+  if (!text || busy) return;
+  input.value = ""; input.style.height = "auto";
+  el("msg user", text);
+  busy = true; sendBtn.disabled = true;
+  try { await (agentMode ? sendAgent(text) : sendChat(text)); }
+  catch (e) { el("msg bot", "⚠ " + e.message); }
+  busy = false; sendBtn.disabled = false;
+}
+
+sendBtn.onclick = onSend;
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); }
+});
+input.addEventListener("input", () => {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 120) + "px";
+});
+$("agent-toggle").onclick = () => {
+  agentMode = !agentMode;
+  $("agent-toggle").classList.toggle("on", agentMode);
+  input.placeholder = agentMode ? "Задача для агента (поиск, память)…" : "Сообщение…";
+};
+$("reset").onclick = () => { messages = []; log.innerHTML = ""; };
+
+loadModels();
+el("msg bot", "ΔV на связи. Обычный чат — просто пишите; 🛠 включает агента с web-поиском и памятью.");
+</script>
+</body>
+</html>
