@@ -64,7 +64,13 @@ class Blockchain:
         # this partial prefix (that bakes a fork); it re-syncs from peers.
         self.restore_incomplete = False
         if self.path is not None:
-            self._load_from_disk()
+            if self.path.exists():
+                self._load_from_disk()
+            else:
+                # Persist the genesis block up front so the on-disk chain is
+                # self-contained from height 0 — readers (light clients,
+                # forensics) shouldn't have to know the genesis out of band.
+                self._append_disk(self.blocks[0])
 
     @property
     def head(self) -> Block:

@@ -211,6 +211,11 @@ def test_chain_survives_restart(genesis, alice, bob, tmp_path):
     keys = keys_map(alice, bob)
     path = tmp_path / "blocks.jsonl"
     chain = Blockchain(genesis, path=path)
+    # the file is self-contained from genesis, even before any block is added
+    import json as _json
+    first = _json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert first["height"] == 0 and first["hash"] == chain.blocks[0].hash
+
     for _ in range(4):
         produce(chain, keys)
     root = chain.state.state_root()
@@ -218,6 +223,21 @@ def test_chain_survives_restart(genesis, alice, bob, tmp_path):
     reopened = Blockchain(genesis, path=path)
     assert reopened.height == 4
     assert reopened.state.state_root() == root
+    assert not reopened.restore_incomplete
+
+    # an independent full replay of the file (genesis + blocks) is clean —
+    # this is what a light client / forensic tool does
+    from deltav.chain.block import Block
+    from deltav.chain.consensus import validate_block
+    rows = [_json.loads(l) for l in path.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["height"] == 0
+    fresh = Blockchain(genesis)
+    state, prev = fresh.state, fresh.blocks[0]
+    for r in rows[1:]:
+        b = Block.from_dict(r)
+        state = validate_block(state, prev, b)
+        prev = b
+    assert state.state_root() == root
 
 
 def test_corrupt_tail_is_truncated(genesis, alice, bob, tmp_path):
