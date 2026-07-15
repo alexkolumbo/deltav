@@ -310,7 +310,8 @@ def _cmd_verify(args: argparse.Namespace) -> int:
 def _cmd_setup(args: argparse.Namespace) -> int:
     from .setup import run_setup
 
-    return run_setup(home=args.home, seed=args.seed, auto_start=not args.no_start)
+    return run_setup(home=args.home, seed=args.seed, lang=args.lang,
+                     auto_start=not args.no_start)
 
 
 def _cmd_price(args: argparse.Namespace) -> int:
@@ -547,6 +548,8 @@ def build_parser() -> argparse.ArgumentParser:
         "setup", help="friendly wizard: bare machine -> live node, step by step")
     p_setup.add_argument("--home", default="", help="install directory (default ~/deltav-node)")
     p_setup.add_argument("--seed", default="", help="a live node URL to join")
+    p_setup.add_argument("--lang", default="", choices=["", "en", "ru"],
+                         help="interface language (default: auto-detect)")
     p_setup.add_argument("--no-start", action="store_true",
                          help="prepare everything but don't launch (writes a start script)")
     p_setup.set_defaults(func=_cmd_setup)

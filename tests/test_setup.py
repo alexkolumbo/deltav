@@ -1,10 +1,12 @@
-"""Setup wizard: asset resolution, model planning, launcher generation."""
+"""Setup wizard: asset resolution, model planning, custom models, i18n."""
 import json
 
 import httpx
 import pytest
 
 from deltav.setup.assets import platform_key, resolve_llama_asset
+from deltav.setup.custom import ModelAnalysis, analyze_model, parse_ref
+from deltav.setup.i18n import T, detect_lang
 from deltav.setup.wizard import SetupWizard
 
 WIN_ASSETS = [
@@ -52,21 +54,86 @@ def test_no_matching_asset_returns_none():
 
 # ------------------------------------------------------------ wizard logic
 
-def test_pick_model_records_a_servable_spec(tmp_path):
-    wiz = SetupWizard(home=tmp_path)
+def test_pick_model_records_a_servable_spec(tmp_path, monkeypatch):
+    wiz = SetupWizard(home=tmp_path, lang="en")
     from deltav.compute.base import DeviceInfo
     wiz.device = DeviceInfo(vendor="amd", name="RX 6600M", vram_mb=8176)
-    # non-interactive: default 'no' to the "show others" prompt
-    import builtins
-    orig = builtins.input
-    builtins.input = lambda *a: ""
-    try:
-        wiz.pick_model(8)
-    finally:
-        builtins.input = orig
+    monkeypatch.setattr("builtins.input", lambda *a: "")  # decline "show others"
+    wiz.pick_model(8)
     assert wiz.spec is not None
     assert wiz.state["model"] == wiz.spec.ref
     assert wiz.spec.params_b >= 3  # 8 GB fits a 7-8B model
+
+
+# ------------------------------------------------------------------ i18n
+
+def test_translator_falls_back_to_english():
+    t = T("ru")
+    assert t("s_hardware") == "Смотрю, какое у вас железо"
+    assert T("en")("s_hardware") == "Checking your hardware"
+    assert T("xx")("s_hardware") == T("en")("s_hardware")  # unknown -> en
+    assert t("nonexistent_key") == "nonexistent_key"       # missing -> key
+
+
+def test_translator_formats():
+    assert "5 GB" in T("en")("gpu_found", name="X", vram="5 GB")
+
+
+def test_detect_lang_from_env(monkeypatch):
+    monkeypatch.setenv("DELTAV_LANG", "ru")
+    assert detect_lang() == "ru"
+    monkeypatch.setenv("DELTAV_LANG", "en_US")
+    assert detect_lang() == "en"
+
+
+# ---------------------------------------------------------- custom models
+
+def test_parse_ref():
+    assert parse_ref("org/repo::file.gguf") == ("org/repo", "file.gguf")
+    assert parse_ref("org/repo") == ("org/repo", "")
+    assert parse_ref(" org/repo/ ") == ("org/repo", "")
+
+
+def _hf_head_handler(size_bytes: int):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD" and request.url.path.endswith(".gguf"):
+            return httpx.Response(200, headers={"content-length": str(size_bytes)})
+        return httpx.Response(404)
+    return handler
+
+
+def test_analyze_model_fits_verdict():
+    # a ~2 GB model on 8 GB VRAM should fit well
+    client = httpx.Client(transport=httpx.MockTransport(_hf_head_handler(2_000_000_000)))
+    a = analyze_model("some/repo::m-Q4_K_M.gguf", vram_mb=8176, client=client)
+    assert a.file_mb > 1500
+    assert a.verdict in ("great", "tight") and a.fits
+    assert a.spec is not None and a.max_context >= 2048
+
+
+def test_analyze_model_too_big_verdict():
+    # a ~40 GB model on 8 GB VRAM cannot fit
+    client = httpx.Client(transport=httpx.MockTransport(_hf_head_handler(40_000_000_000)))
+    a = analyze_model("big/repo::m-Q4_K_M.gguf", vram_mb=8176, client=client)
+    assert a.verdict == "too_big" and not a.fits
+
+
+def test_analyze_model_unreadable():
+    def handler(request):
+        return httpx.Response(404)
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    a = analyze_model("nope/none::x.gguf", vram_mb=8176, client=client)
+    assert a.verdict == "unknown" and a.spec is None
+
+
+# ------------------------------------------------------------- expanded catalog
+
+def test_catalog_covers_more_families():
+    from deltav.router import Catalog
+    families = {s.family for s in Catalog().specs}
+    assert {"gemma2", "mistral", "phi", "deepseek-r1", "qwen2.5", "llama3"} <= families
+    chat = [s for s in Catalog().specs if s.kind == "chat"]
+    assert len(chat) >= 15
 
 
 def test_launcher_script_is_runnable(tmp_path):

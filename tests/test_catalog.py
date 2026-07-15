@@ -27,10 +27,11 @@ def test_best_for_4070_is_highest_quality_fit():
     assert estimate_vram_mb(best) <= RTX_4070_MB
 
 
-def test_8gb_falls_back_to_7b_class():
+def test_8gb_falls_back_to_mid_model():
     best = Catalog().best_for(RTX_3060_MB)
     assert best is not None
-    assert 6 <= best.params_b <= 9
+    assert 6 <= best.params_b <= 10  # a 7-9B-class model, not a 14B+
+    assert estimate_vram_mb(best) <= RTX_3060_MB
 
 
 def test_tiny_vram_still_gets_a_model():

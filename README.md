@@ -97,9 +97,9 @@ Metal для Apple — без компиляции и CUDA), подберёт и
 
 ```bash
 # Linux / macOS
-curl -fsSL <repo>/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.sh | sh
 # Windows (PowerShell)
-irm <repo>/install.ps1 | iex
+irm https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.ps1 | iex
 
 # или, если Python уже есть:
 deltav setup --seed http://<любая-живая-нода>:9100
@@ -115,7 +115,7 @@ deltav setup --seed http://<любая-живая-нода>:9100
 модель, скачивает её, забирает генезис у seed-ноды и запускается.
 
 ```bash
-pip install "deltav-network[gpu,hub] @ git+<repo>"   # llama.cpp под своё железо
+pip install "deltav-network[gpu,hub] @ git+https://github.com/alexkolumbo/deltav"   # llama.cpp под своё железо
 deltav join --seed http://<any-node>:9100 --endpoint http://<my-ip>:9100 --stake 1000
 ```
 

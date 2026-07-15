@@ -1,6 +1,6 @@
 #!/bin/sh
 # Delta V node — one-line installer for Linux / macOS.
-#   curl -fsSL <raw-url>/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.sh | sh
 # Installs Python deps and launches the friendly setup wizard.
 set -e
 

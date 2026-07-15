@@ -1,5 +1,5 @@
 # Delta V node - one-line installer for Windows.
-#   irm <raw-url>/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.ps1 | iex
 # Installs Python deps and launches the friendly setup wizard.
 $ErrorActionPreference = "Stop"
 

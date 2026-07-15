@@ -27,7 +27,7 @@ def test_pick_model_4070():
 
 def test_pick_model_small_gpu():
     spec = pick_model_for_device(DeviceInfo(vendor="amd", name="RX 6600", vram_mb=8192))
-    assert spec is not None and 6 <= spec.params_b <= 9
+    assert spec is not None and 6 <= spec.params_b <= 10  # a 7-9B-class model
 
 
 @pytest.fixture
