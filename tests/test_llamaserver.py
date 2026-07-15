@@ -1,12 +1,17 @@
-"""LlamaServerBackend: HTTP contract with a llama.cpp server."""
+"""LlamaServerBackend: HTTP contract with a llama.cpp server.
+
+Generation goes through the server's /v1/chat/completions so llama.cpp
+applies each model's own chat template from GGUF metadata.
+"""
 import json
 
 import httpx
+import pytest
 
 from deltav.compute.base import EmbedRequest, InferRequest
 from deltav.compute.llamaserver import LlamaServerBackend
 
-MODEL = "bartowski/Llama-3.2-3B-Instruct-GGUF::Llama-3.2-3B-Instruct-Q4_K_M.gguf"
+MODEL = "bartowski/Qwen2.5-7B-Instruct-GGUF::Qwen2.5-7B-Instruct-Q4_K_M.gguf"
 
 
 def make_backend(handler) -> LlamaServerBackend:
@@ -16,16 +21,17 @@ def make_backend(handler) -> LlamaServerBackend:
     )
 
 
-def test_infer_maps_completion_api():
+def test_infer_uses_chat_endpoint_with_template():
     def handler(request: httpx.Request) -> httpx.Response:
-        assert str(request.url).endswith("/completion")
+        assert str(request.url).endswith("/v1/chat/completions")
         payload = json.loads(request.content)
-        assert payload["prompt"] == "hi amd"
-        assert payload["n_predict"] == 32
+        # the whole rendered conversation travels as ONE user message
+        assert payload["messages"] == [{"role": "user", "content": "hi amd"}]
+        assert payload["max_tokens"] == 32
+        assert "\nuser:" in payload["stop"]
         return httpx.Response(200, json={
-            "content": "hello from vulkan",
-            "tokens_evaluated": 4,
-            "tokens_predicted": 5,
+            "choices": [{"message": {"role": "assistant", "content": "hello from vulkan"}}],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 5},
         })
 
     result = make_backend(handler).infer(
@@ -35,12 +41,13 @@ def test_infer_maps_completion_api():
     assert result.deterministic is False  # fuzzy spot checks
 
 
-def test_infer_stream_collects_pieces():
+def test_infer_stream_collects_pieces_and_usage():
     def handler(request: httpx.Request) -> httpx.Response:
         body = (
-            'data: {"content": "hel", "stop": false}\n\n'
-            'data: {"content": "lo", "stop": false}\n\n'
-            'data: {"content": "", "stop": true, "tokens_evaluated": 3, "tokens_predicted": 2}\n\n'
+            'data: {"choices": [{"delta": {"content": "hel"}}]}\n\n'
+            'data: {"choices": [{"delta": {"content": "lo"}}]}\n\n'
+            'data: {"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 2}}\n\n'
+            "data: [DONE]\n\n"
         )
         return httpx.Response(200, content=body.encode(),
                               headers={"content-type": "text/event-stream"})
@@ -58,7 +65,6 @@ def test_server_error_detail_is_surfaced():
         return httpx.Response(400, json={"error": {
             "message": "request (5402 tokens) exceeds the available context size (4096 tokens)"}})
 
-    import pytest
     with pytest.raises(RuntimeError, match="exceeds the available context"):
         make_backend(handler).infer(InferRequest(prompt="long", model_ref=MODEL))
 

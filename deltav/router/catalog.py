@@ -89,6 +89,10 @@ CURATED_CATALOG: list[ModelSpec] = [
     ModelSpec("Qwen/Qwen2.5-7B-Instruct-GGUF", "qwen2.5-7b-instruct-q4_k_m.gguf",
               "qwen2.5", 7.6, "Q4_K_M", 4680, 0.75,
               n_layers=28, n_kv_heads=4, head_dim=128, max_ctx=32768),
+    # Same weights, single-file quant (the official repo splits q4_k_m).
+    ModelSpec("bartowski/Qwen2.5-7B-Instruct-GGUF", "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+              "qwen2.5", 7.6, "Q4_K_M", 4467, 0.75,
+              n_layers=28, n_kv_heads=4, head_dim=128, max_ctx=32768),
     ModelSpec("bartowski/Meta-Llama-3.1-8B-Instruct-GGUF", "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
               "llama3", 8.0, "Q4_K_M", 4920, 0.78,
               n_layers=32, n_kv_heads=8, head_dim=128, max_ctx=131072),

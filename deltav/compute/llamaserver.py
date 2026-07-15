@@ -59,21 +59,31 @@ class LlamaServerBackend(ComputeBackend):
         if resp.status_code >= 400:
             raise RuntimeError(f"llama-server {resp.status_code}: {resp.text[:300]}")
 
-    def infer(self, request: InferRequest) -> InferResult:
-        resp = self.client.post(f"{self.base_url}/completion", json={
-            "prompt": request.prompt,
-            "n_predict": request.max_tokens,
+    def _chat_body(self, request: InferRequest) -> dict:
+        """We send the whole rendered conversation as ONE user message to
+        the server's OpenAI endpoint, so llama.cpp applies the model's OWN
+        chat template from GGUF metadata (Qwen needs ChatML or it drifts
+        into Chinese; Llama needs its header tokens; the server knows —
+        we don't have to). STOP stays as a role-play safety net."""
+        return {
+            "model": "default",
+            "messages": [{"role": "user", "content": request.prompt}],
+            "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "seed": request.seed,
             "stop": self.STOP,
-            "cache_prompt": False,
-        })
+        }
+
+    def infer(self, request: InferRequest) -> InferResult:
+        resp = self.client.post(f"{self.base_url}/v1/chat/completions",
+                                json=self._chat_body(request))
         self._raise_with_detail(resp)
         data = resp.json()
+        usage = data.get("usage") or {}
         return InferResult(
-            text=data.get("content", ""),
-            tokens_in=int(data.get("tokens_evaluated", 0)),
-            tokens_out=max(1, int(data.get("tokens_predicted", 1))),
+            text=data["choices"][0]["message"].get("content") or "",
+            tokens_in=int(usage.get("prompt_tokens", 0)),
+            tokens_out=max(1, int(usage.get("completion_tokens", 1))),
             seed=request.seed,
             model_ref=request.model_ref,
             backend=self.name,
@@ -84,33 +94,30 @@ class LlamaServerBackend(ComputeBackend):
         pieces: list[str] = []
         tokens_in = 0
         tokens_out = 0
-        with self.client.stream("POST", f"{self.base_url}/completion", json={
-            "prompt": request.prompt,
-            "n_predict": request.max_tokens,
-            "temperature": request.temperature,
-            "seed": request.seed,
-            "stop": self.STOP,
-            "cache_prompt": False,
+        body = self._chat_body(request) | {
             "stream": True,
-        }) as resp:
+            "stream_options": {"include_usage": True},
+        }
+        with self.client.stream("POST", f"{self.base_url}/v1/chat/completions",
+                                json=body) as resp:
             if resp.status_code >= 400:
                 resp.read()
                 self._raise_with_detail(resp)
             for line in resp.iter_lines():
-                if not line.startswith("data: "):
+                if not line.startswith("data: ") or line == "data: [DONE]":
                     continue
                 event = json.loads(line[len("data: "):])
-                piece = event.get("content", "")
+                usage = event.get("usage")
+                if usage:
+                    tokens_in = int(usage.get("prompt_tokens", 0))
+                    tokens_out = int(usage.get("completion_tokens", 0))
+                choices = event.get("choices") or []
+                if not choices:
+                    continue
+                piece = choices[0].get("delta", {}).get("content") or ""
                 if piece:
                     pieces.append(piece)
                     yield piece
-                if event.get("stop"):
-                    timings = event.get("timings", {})
-                    tokens_in = int(event.get("tokens_evaluated", 0)
-                                    or timings.get("prompt_n", 0))
-                    tokens_out = int(event.get("tokens_predicted", 0)
-                                     or timings.get("predicted_n", 0))
-                    break
         yield InferResult(
             text="".join(pieces),
             tokens_in=tokens_in or max(1, len(request.prompt.split())),
