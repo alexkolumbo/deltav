@@ -229,6 +229,30 @@ def _cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_plan(args: argparse.Namespace) -> int:
+    from .compute import detect_device
+    from .router.planner import launch_hint, plan
+
+    if args.vram:
+        vram, label = args.vram, f"{args.vram} MB (given)"
+    else:
+        device = detect_device()
+        vram = device.vram_mb
+        label = f"{device.vendor}/{device.name} {vram} MB (detected)"
+    print(f"hardware : {label}\nobjective: {args.objective}\n")
+    options = plan(vram, objective=args.objective)
+    if not options:
+        print("nothing fits this VRAM budget")
+        return 1
+    for i, o in enumerate(options, 1):
+        star = " <== native limit" if any("native" in n for n in o.notes) else ""
+        print(f"{i:2}. {o.ref.split('::')[0]}")
+        print(f"    {o.params_b}B {o.quant} quality={o.quality} | ctx={o.max_context:,} "
+              f"kv={o.kv_type} | ~{o.est_vram_mb:,} MB{star}")
+        print(f"    {launch_hint(o)}")
+    return 0
+
+
 def _cmd_search(args: argparse.Namespace) -> int:
     import httpx
 
@@ -379,6 +403,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_sim.add_argument("--duration", type=float, default=25.0)
     p_sim.add_argument("--base-port", type=int, default=9100)
     p_sim.set_defaults(func=_cmd_sim)
+
+    p_plan = sub.add_parser(
+        "plan", help="hardware-aware model planner: what should this machine run?")
+    p_plan.add_argument("--vram", type=int, default=0, help="VRAM MB (default: detect)")
+    p_plan.add_argument("--objective", default="balanced",
+                        choices=["balanced", "max_context", "max_quality"])
+    p_plan.set_defaults(func=_cmd_plan)
 
     p_search = sub.add_parser("search", help="internet search through the gateway")
     p_search.add_argument("query")

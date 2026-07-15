@@ -184,6 +184,27 @@ class GatewayDaemon:
                 })
             return {"object": "list", "data": data}
 
+        @app.get("/v1/plan")
+        async def plan_endpoint(vram_mb: int, objective: str = "balanced") -> dict:
+            """Model planner enriched with live network state: which of the
+            recommended models are already served (warm) right now."""
+            from ..router.planner import launch_hint, plan
+
+            await self.router.refresh(self.node_urls)
+            options = plan(vram_mb, objective=objective, catalog=self.catalog)
+            served = {m for n in self.router.nodes if n.alive for m in n.models}
+            return {
+                "vram_mb": vram_mb,
+                "objective": objective,
+                "options": [
+                    o.to_dict() | {
+                        "launch": launch_hint(o),
+                        "already_served_on_network": o.ref in served,
+                    }
+                    for o in options
+                ],
+            }
+
         @app.get("/v1/search")
         async def search(q: str, max_results: int = 5) -> dict:
             """The network's internet search surface (also a built-in tool)."""

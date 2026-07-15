@@ -219,6 +219,20 @@ class NodeDaemon:
         async def explorer() -> str:
             return (Path(__file__).parent / "explorer.html").read_text(encoding="utf-8")
 
+        @app.get("/plan")
+        async def plan_endpoint(vram_mb: int = 0, objective: str = "balanced") -> dict:
+            """The chain-native model planner: tell any hardware what to run."""
+            from ..router.planner import launch_hint, plan
+
+            vram = vram_mb or self.device.vram_mb
+            options = plan(vram, objective=objective)
+            return {
+                "vram_mb": vram,
+                "objective": objective,
+                "device": self.device.to_dict() if not vram_mb else None,
+                "options": [o.to_dict() | {"launch": launch_hint(o)} for o in options],
+            }
+
         @app.get("/chain/head")
         async def chain_head() -> dict:
             return self.chain.head.to_dict()

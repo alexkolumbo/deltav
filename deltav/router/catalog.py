@@ -24,8 +24,13 @@ class ModelSpec:
     quant: str
     file_mb: int            # size of the GGUF file
     quality: float          # rough capability score 0..1 for auto-routing
-    ctx: int = 4096
+    ctx: int = 4096         # default SERVING context (planning may raise it)
     kind: str = "chat"      # "chat" | "embedding"
+    # Architecture facts for exact KV-cache math (0 = unknown -> heuristic).
+    n_layers: int = 0
+    n_kv_heads: int = 0
+    head_dim: int = 128
+    max_ctx: int = 4096     # the model's native context limit
 
     @property
     def ref(self) -> str:
@@ -38,41 +43,71 @@ class ModelSpec:
         return d
 
 
+# Bytes per KV element for llama.cpp cache types (q* need flash attention).
+KV_BYTES = {"f16": 2.0, "q8_0": 1.0625, "q4_0": 0.5625}
+# Scratch buffers grow mildly with context.
+_PER_TOKEN_OVERHEAD_MB = 0.005
+
+
 def kv_cache_mb(params_b: float, ctx: int) -> int:
-    """Rough fp16 KV-cache estimate scaled by model size."""
+    """Rough fp16 KV-cache estimate scaled by model size (fallback when
+    the architecture is unknown)."""
     return int(params_b * ctx / 32)
 
 
-def estimate_vram_mb(spec: ModelSpec, ctx: int | None = None) -> int:
+def kv_bytes_per_token(spec: ModelSpec, kv_type: str = "f16") -> int:
+    """Exact per-token KV size: 2 (K+V) x layers x kv_heads x head_dim."""
+    if spec.n_layers <= 0 or spec.n_kv_heads <= 0:
+        return 0
+    return int(2 * spec.n_layers * spec.n_kv_heads * spec.head_dim * KV_BYTES[kv_type])
+
+
+def estimate_vram_mb(spec: ModelSpec, ctx: int | None = None, kv_type: str = "f16") -> int:
     ctx = ctx or spec.ctx
-    return int(spec.file_mb * _WEIGHTS_FACTOR) + kv_cache_mb(spec.params_b, ctx) + _RUNTIME_OVERHEAD_MB
+    per_token = kv_bytes_per_token(spec, kv_type)
+    kv_mb = int(per_token * ctx / (1024 * 1024)) if per_token \
+        else kv_cache_mb(spec.params_b, ctx)
+    return (int(spec.file_mb * _WEIGHTS_FACTOR) + kv_mb
+            + _RUNTIME_OVERHEAD_MB + int(ctx * _PER_TOKEN_OVERHEAD_MB))
 
 
-# Real GGUF quants published on HuggingFace (sizes in MB, Q4_K_M unless noted).
+# Real GGUF quants published on HuggingFace (sizes in MB, Q4_K_M unless
+# noted) with architecture facts for exact KV planning.
 CURATED_CATALOG: list[ModelSpec] = [
     ModelSpec("Qwen/Qwen2.5-0.5B-Instruct-GGUF", "qwen2.5-0.5b-instruct-q4_k_m.gguf",
-              "qwen2.5", 0.5, "Q4_K_M", 491, 0.35),
+              "qwen2.5", 0.5, "Q4_K_M", 491, 0.35,
+              n_layers=24, n_kv_heads=2, head_dim=64, max_ctx=32768),
     ModelSpec("bartowski/Llama-3.2-1B-Instruct-GGUF", "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-              "llama3", 1.2, "Q4_K_M", 808, 0.45),
+              "llama3", 1.2, "Q4_K_M", 808, 0.45,
+              n_layers=16, n_kv_heads=8, head_dim=64, max_ctx=131072),
     ModelSpec("bartowski/Llama-3.2-3B-Instruct-GGUF", "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-              "llama3", 3.2, "Q4_K_M", 2020, 0.60),
+              "llama3", 3.2, "Q4_K_M", 2020, 0.60,
+              n_layers=28, n_kv_heads=8, head_dim=128, max_ctx=131072),
     ModelSpec("bartowski/Mistral-7B-Instruct-v0.3-GGUF", "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
-              "mistral", 7.2, "Q4_K_M", 4370, 0.72),
+              "mistral", 7.2, "Q4_K_M", 4370, 0.72,
+              n_layers=32, n_kv_heads=8, head_dim=128, max_ctx=32768),
     ModelSpec("Qwen/Qwen2.5-7B-Instruct-GGUF", "qwen2.5-7b-instruct-q4_k_m.gguf",
-              "qwen2.5", 7.6, "Q4_K_M", 4680, 0.75),
+              "qwen2.5", 7.6, "Q4_K_M", 4680, 0.75,
+              n_layers=28, n_kv_heads=4, head_dim=128, max_ctx=32768),
     ModelSpec("bartowski/Meta-Llama-3.1-8B-Instruct-GGUF", "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-              "llama3", 8.0, "Q4_K_M", 4920, 0.78),
+              "llama3", 8.0, "Q4_K_M", 4920, 0.78,
+              n_layers=32, n_kv_heads=8, head_dim=128, max_ctx=131072),
     ModelSpec("Qwen/Qwen2.5-14B-Instruct-GGUF", "qwen2.5-14b-instruct-q4_k_m.gguf",
-              "qwen2.5", 14.7, "Q4_K_M", 8990, 0.84),
+              "qwen2.5", 14.7, "Q4_K_M", 8990, 0.84,
+              n_layers=48, n_kv_heads=8, head_dim=128, max_ctx=32768),
     ModelSpec("bartowski/phi-4-GGUF", "phi-4-Q4_K_M.gguf",
-              "phi", 14.7, "Q4_K_M", 9050, 0.85),
+              "phi", 14.7, "Q4_K_M", 9050, 0.85,
+              n_layers=40, n_kv_heads=10, head_dim=128, max_ctx=16384),
     ModelSpec("Qwen/Qwen2.5-32B-Instruct-GGUF", "qwen2.5-32b-instruct-q4_k_m.gguf",
-              "qwen2.5", 32.8, "Q4_K_M", 19900, 0.90),
+              "qwen2.5", 32.8, "Q4_K_M", 19900, 0.90,
+              n_layers=64, n_kv_heads=8, head_dim=128, max_ctx=32768),
     ModelSpec("bartowski/Llama-3.3-70B-Instruct-GGUF", "Llama-3.3-70B-Instruct-Q4_K_M.gguf",
-              "llama3", 70.6, "Q4_K_M", 42500, 0.95),
+              "llama3", 70.6, "Q4_K_M", 42500, 0.95,
+              n_layers=80, n_kv_heads=8, head_dim=128, max_ctx=131072),
     # Embedding models (routed by kind, never picked for chat).
     ModelSpec("nomic-ai/nomic-embed-text-v1.5-GGUF", "nomic-embed-text-v1.5.Q4_K_M.gguf",
-              "nomic", 0.14, "Q4_K_M", 84, 0.60, ctx=2048, kind="embedding"),
+              "nomic", 0.14, "Q4_K_M", 84, 0.60, ctx=2048, kind="embedding",
+              n_layers=12, n_kv_heads=12, head_dim=64, max_ctx=8192),
 ]
 
 
