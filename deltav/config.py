@@ -27,6 +27,15 @@ class ChainParams:
     # Fraction of a node's stake burned when a spot check fails.
     slash_fraction: float = 0.05
     max_txs_per_block: int = 100
+    # Liveness: fallback proposer slots per height. Slot s may produce
+    # once (s+1) * block_time has elapsed since the previous block.
+    max_slots: int = 8
+    # A validator that misses its slot this many times gets jailed
+    # (excluded from proposing/checking) for jail_blocks.
+    jail_after_misses: int = 3
+    jail_blocks: int = 50
+    # Unstaked funds stay slashable for this many blocks before release.
+    unbonding_blocks: int = 20
 
 
 @dataclass

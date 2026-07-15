@@ -66,6 +66,7 @@ def _cmd_node(args: argparse.Namespace) -> int:
         backend=args.backend,
         models=args.model,
         stake=int(args.stake * DVT),
+        data_dir=args.data_dir,
     )
     daemon = NodeDaemon(keypair, genesis, cfg)
     print(f"node {keypair.address} on {cfg.public_url()} backend={daemon.backend.name}")
@@ -159,6 +160,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_node.add_argument("--backend", default="auto", help="auto | llamacpp | mock | groq | asic")
     p_node.add_argument("--model", action="append", default=[], help="model ref to announce (repeatable)")
     p_node.add_argument("--stake", type=float, default=0.0, help="DVT to stake at startup")
+    p_node.add_argument("--data-dir", default="", help="persist the chain to this directory")
     p_node.set_defaults(func=_cmd_node)
 
     p_gw = sub.add_parser("gateway", help="run the OpenAI-compatible gateway")

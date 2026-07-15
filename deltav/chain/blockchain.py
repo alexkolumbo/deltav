@@ -1,12 +1,18 @@
-"""Chain container + mempool."""
+"""Chain container + mempool + on-disk persistence."""
 from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
 
 from ..config import Genesis
 from ..crypto import KeyPair
 from .block import Block, GENESIS_PROPOSER, ZERO_HASH
-from .consensus import ConsensusError, expected_proposer, validate_block
+from .consensus import ConsensusError, expected_proposer, missed_proposers, validate_block
 from .state import State, StateError
 from .transaction import Tx
+
+log = logging.getLogger("deltav.chain")
 
 
 def build_genesis_state(genesis: Genesis) -> State:
@@ -33,10 +39,13 @@ def build_genesis_block(genesis: Genesis) -> Block:
 
 
 class Blockchain:
-    def __init__(self, genesis: Genesis):
+    def __init__(self, genesis: Genesis, path: str | Path | None = None):
         self.genesis = genesis
+        self.path = Path(path) if path else None
         self.blocks: list[Block] = [build_genesis_block(genesis)]
         self.state: State = build_genesis_state(genesis)
+        if self.path is not None:
+            self._load_from_disk()
 
     @property
     def head(self) -> Block:
@@ -46,15 +55,85 @@ class Blockchain:
     def height(self) -> int:
         return self.head.height
 
-    def next_proposer(self) -> str | None:
-        return expected_proposer(self.state, self.height + 1, self.head.hash)
+    def next_proposer(self, slot: int = 0) -> str | None:
+        return expected_proposer(self.state, self.height + 1, self.head.hash, slot)
 
-    def add_block(self, block: Block) -> None:
+    # --------------------------------------------------------- persistence
+    def _load_from_disk(self) -> None:
+        """Replay blocks.jsonl; a corrupt/forked tail is truncated, not fatal."""
+        if not self.path.exists():
+            return
+        loaded = 0
+        with self.path.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    block = Block.from_dict(json.loads(line))
+                    if block.height == 0:
+                        if block.hash != self.blocks[0].hash:
+                            log.warning("stored chain has a different genesis — ignoring file")
+                            return
+                        continue
+                    self._commit(block)
+                    loaded += 1
+                except (ConsensusError, ValueError, KeyError) as exc:
+                    log.warning("stopping replay at height %s: %s", self.height + 1, exc)
+                    break
+        if loaded:
+            log.info("restored chain to height %s from %s", self.height, self.path)
+        self._rewrite_disk()
+
+    def _append_disk(self, block: Block) -> None:
+        if self.path is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(block.to_dict(), sort_keys=True) + "\n")
+
+    def _rewrite_disk(self) -> None:
+        if self.path is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            for block in self.blocks:
+                fh.write(json.dumps(block.to_dict(), sort_keys=True) + "\n")
+        tmp.replace(self.path)
+
+    # -------------------------------------------------------------- growth
+    def _commit(self, block: Block) -> None:
         new_state = validate_block(self.state, self.head, block)
         self.blocks.append(block)
         self.state = new_state
 
-    def build_block(self, keypair: KeyPair, txs: list[Tx], timestamp: float) -> Block:
+    def add_block(self, block: Block) -> None:
+        self._commit(block)
+        self._append_disk(block)
+
+    def extend(self, block_dicts: list[dict]) -> int:
+        """Incremental sync: append consecutive blocks on top of our head.
+
+        Returns how many were appended; stops at the first that doesn't
+        fit (caller falls back to a full replace on a fork).
+        """
+        appended = 0
+        for data in block_dicts:
+            try:
+                block = Block.from_dict(data)
+            except (KeyError, ValueError):
+                break
+            if block.height != self.height + 1:
+                continue
+            try:
+                self.add_block(block)
+                appended += 1
+            except ConsensusError:
+                break
+        return appended
+
+    def build_block(self, keypair: KeyPair, txs: list[Tx], timestamp: float, slot: int = 0) -> Block:
         """Assemble, apply-check and sign the next block; txs that don't apply are dropped."""
         trial = self.state.clone()
         included: list[Tx] = []
@@ -69,7 +148,8 @@ class Blockchain:
                 continue
             included.append(tx)
             fees += tx.fee
-        trial.apply_block_rewards(keypair.address, fees)
+        missed = missed_proposers(self.state, height, self.head.hash, slot)
+        trial.apply_block_effects(keypair.address, fees, missed, height)
         trial.height = height
         block = Block(
             height=height,
@@ -78,11 +158,12 @@ class Blockchain:
             proposer=keypair.address,
             txs=included,
             state_root=trial.state_root(),
+            slot=slot,
         )
         return block.sign(keypair)
 
     def replace(self, block_dicts: list[dict]) -> bool:
-        """Adopt a longer valid chain (naive full re-validation from genesis)."""
+        """Adopt a longer valid chain (full re-validation from genesis)."""
         if len(block_dicts) <= len(self.blocks):
             return False
         try:
@@ -91,12 +172,13 @@ class Blockchain:
             if incoming[0].hash != candidate.blocks[0].hash:
                 return False
             for block in incoming[1:]:
-                candidate.add_block(block)
+                candidate._commit(block)
         except (ConsensusError, KeyError, ValueError):
             return False
         if candidate.height > self.height:
             self.blocks = candidate.blocks
             self.state = candidate.state
+            self._rewrite_disk()
             return True
         return False
 

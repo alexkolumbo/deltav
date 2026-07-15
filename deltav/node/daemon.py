@@ -13,18 +13,22 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException
 
 from ..chain import Blockchain, Mempool, Tx, TxType
 from ..chain.block import Block
-from ..chain.consensus import ConsensusError
+from ..chain.consensus import ConsensusError, expected_proposer
 from ..compute import DeviceInfo, InferRequest, detect_device, make_backend
 from ..config import Genesis
 from ..crypto import KeyPair, canonical_json, sha256_hex
+from .verify import spot_check_verdict
 
 log = logging.getLogger("deltav.node")
+
+MAX_PEERS = 32
 
 
 @dataclass
@@ -32,7 +36,7 @@ class NodeConfig:
     host: str = "127.0.0.1"
     port: int = 9100
     endpoint: str = ""            # public URL; defaults to http://host:port
-    peers: list[str] = field(default_factory=list)
+    peers: list[str] = field(default_factory=list)  # seed peers; more are discovered
     backend: str = "mock"
     models: list[str] = field(default_factory=list)  # model refs to announce
     stake: int = 0                 # udvt to stake at startup
@@ -40,6 +44,7 @@ class NodeConfig:
     spot_check: bool = True
     auto_register: bool = True
     device: DeviceInfo | None = None
+    data_dir: str = ""             # persist the chain to <data_dir>/blocks.jsonl
 
     def public_url(self) -> str:
         return self.endpoint or f"http://{self.host}:{self.port}"
@@ -55,15 +60,18 @@ class NodeDaemon:
     ):
         self.keypair = keypair
         self.cfg = cfg
-        self.chain = Blockchain(genesis)
+        chain_path = Path(cfg.data_dir) / "blocks.jsonl" if cfg.data_dir else None
+        self.chain = Blockchain(genesis, path=chain_path)
         self.mempool = Mempool()
         self.backend = make_backend(cfg.backend)
         self.device = cfg.device or detect_device()
         self.client = client or httpx.AsyncClient()
         self._owns_client = client is None
+        self.peers: set[str] = {p for p in cfg.peers if p != cfg.public_url()}
         self.jobs: dict[str, dict] = {}      # request_hash -> job params (for spot checkers)
         self.active_jobs = 0
         self._seen_blocks: set[str] = set()
+        self._head_seen_at = time.monotonic()
         self._tasks: list[asyncio.Task] = []
         self._running = False
         self.app = self._build_app()
@@ -94,7 +102,18 @@ class NodeDaemon:
                 await self.client.post(f"{peer}{path}", json=body, timeout=5.0)
             except httpx.HTTPError:
                 pass
-        await asyncio.gather(*(send(p) for p in self.cfg.peers), return_exceptions=True)
+        await asyncio.gather(*(send(p) for p in list(self.peers)), return_exceptions=True)
+
+    def _note_new_head(self) -> None:
+        self._head_seen_at = time.monotonic()
+
+    def _add_peers(self, urls) -> None:
+        me = self.cfg.public_url()
+        for url in urls:
+            if isinstance(url, str) and url.startswith("http") and url != me:
+                if len(self.peers) >= MAX_PEERS:
+                    break
+                self.peers.add(url.rstrip("/"))
 
     # ----------------------------------------------------------------- api
     def _build_app(self) -> FastAPI:
@@ -112,6 +131,7 @@ class NodeDaemon:
                 "models": self.cfg.models,
                 "load": min(1.0, self.active_jobs / 4.0),
                 "mempool": len(self.mempool),
+                "peers": len(self.peers),
             }
 
         @app.post("/tx")
@@ -134,8 +154,11 @@ class NodeDaemon:
             if block.hash in self._seen_blocks:
                 return {"status": "seen"}
             self._seen_blocks.add(block.hash)
+            if from_url:
+                self._add_peers([from_url])
             try:
                 self.chain.add_block(block)
+                self._note_new_head()
                 self.mempool.prune(self.chain.state)
                 await self._gossip("/p2p/block", body)
                 return {"status": "accepted", "height": self.chain.height}
@@ -144,6 +167,10 @@ class NodeDaemon:
                     asyncio.get_running_loop().create_task(self._sync_from(from_url))
                     return {"status": "syncing"}
                 return {"status": "rejected"}
+
+        @app.get("/p2p/peers")
+        async def p2p_peers() -> dict:
+            return {"peers": sorted(self.peers | {self.cfg.public_url()})}
 
         @app.get("/chain/head")
         async def chain_head() -> dict:
@@ -170,6 +197,7 @@ class NodeDaemon:
                     "tokens_served": node.tokens_served,
                     "last_seen": node.last_seen,
                     "active": node.active,
+                    "jailed_until": acc.jailed_until,
                 })
             return {"height": state.height, "nodes": nodes}
 
@@ -184,7 +212,8 @@ class NodeDaemon:
                 {
                     "receipt_hash": r.receipt_hash, "node": r.node, "model": r.model,
                     "tokens": r.tokens_in + r.tokens_out, "price_paid": r.price_paid,
-                    "height": r.height, "checked": r.checked, "check_ok": r.check_ok,
+                    "height": r.height, "deterministic": r.deterministic,
+                    "checked": r.checked, "check_ok": r.check_ok,
                 }
                 for r in sorted(self.chain.state.receipts.values(), key=lambda x: x.height)
             ]
@@ -243,6 +272,7 @@ class NodeDaemon:
             "tokens_in": result.tokens_in,
             "tokens_out": result.tokens_out,
             "price_limit": int(body["price_limit"]),
+            "deterministic": result.deterministic and self.backend.deterministic,
         })
         await self.submit_tx(receipt)
         return {
@@ -263,6 +293,7 @@ class NodeDaemon:
             self._tasks.append(asyncio.create_task(self._register_self()))
         self._tasks.append(asyncio.create_task(self._producer_loop()))
         self._tasks.append(asyncio.create_task(self._sync_loop()))
+        self._tasks.append(asyncio.create_task(self._discovery_loop()))
         if self.cfg.spot_check:
             self._tasks.append(asyncio.create_task(self._checker_loop()))
 
@@ -287,19 +318,31 @@ class NodeDaemon:
             await self.submit_tx(stake)
 
     async def _producer_loop(self) -> None:
+        """Slot-based production: slot 0's proposer goes first; if the head
+        stays stale, later slots' proposers step in — the chain never stalls
+        on one dead validator."""
         params = self.chain.genesis.params
         while self._running:
-            await asyncio.sleep(params.block_time)
+            await asyncio.sleep(params.block_time / 2)
             if not self.cfg.produce:
                 continue
-            if self.chain.next_proposer() != self.address:
+            elapsed = time.monotonic() - self._head_seen_at
+            open_slots = min(int(elapsed / params.block_time), params.max_slots)
+            my_slot = next(
+                (s for s in range(open_slots)
+                 if self.chain.next_proposer(slot=s) == self.address),
+                None,
+            )
+            if my_slot is None:
                 continue
-            block = self.chain.build_block(self.keypair, self.mempool.collect(), time.time())
+            block = self.chain.build_block(
+                self.keypair, self.mempool.collect(), time.time(), slot=my_slot)
             try:
                 self.chain.add_block(block)
             except ConsensusError as exc:  # e.g. lost a race with an incoming block
                 log.debug("own block rejected: %s", exc)
                 continue
+            self._note_new_head()
             self._seen_blocks.add(block.hash)
             self.mempool.prune(self.chain.state)
             await self._gossip("/p2p/block", {"block": block.to_dict(), "from_url": self.cfg.public_url()})
@@ -308,7 +351,7 @@ class NodeDaemon:
         params = self.chain.genesis.params
         while self._running:
             await asyncio.sleep(params.block_time)
-            for peer in self.cfg.peers:
+            for peer in list(self.peers):
                 try:
                     resp = await self.client.get(f"{peer}/chain/head", timeout=5.0)
                     resp.raise_for_status()
@@ -318,17 +361,53 @@ class NodeDaemon:
                     await self._sync_from(peer)
 
     async def _sync_from(self, peer: str) -> None:
+        """Incremental first: fetch only the blocks past our head. On a
+        fork (nothing appends) fall back to a full re-validated replace."""
         try:
             resp = await self.client.get(
-                f"{peer}/chain/blocks", params={"start": 0, "count": 10_000}, timeout=30.0
+                f"{peer}/chain/blocks",
+                params={"start": self.chain.height + 1, "count": 10_000},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            tail = resp.json().get("blocks", [])
+        except httpx.HTTPError:
+            return
+        appended = self.chain.extend(tail)
+        if appended:
+            self._note_new_head()
+            self.mempool.prune(self.chain.state)
+            log.info("extended chain to height %s from %s", self.chain.height, peer)
+            return
+        try:
+            resp = await self.client.get(
+                f"{peer}/chain/blocks", params={"start": 0, "count": 100_000}, timeout=60.0
             )
             resp.raise_for_status()
             blocks = resp.json().get("blocks", [])
         except httpx.HTTPError:
             return
         if self.chain.replace(blocks):
+            self._note_new_head()
             self.mempool.prune(self.chain.state)
-            log.info("synced to height %s from %s", self.chain.height, peer)
+            log.info("replaced chain: synced to height %s from %s", self.chain.height, peer)
+
+    async def _discovery_loop(self) -> None:
+        """Peer exchange + endpoints from the on-chain node registry."""
+        params = self.chain.genesis.params
+        while self._running:
+            await asyncio.sleep(params.block_time * 3)
+            self._add_peers(
+                n.endpoint for n in self.chain.state.nodes.values()
+                if n.active and n.address != self.address
+            )
+            for peer in list(self.peers)[:8]:
+                try:
+                    resp = await self.client.get(f"{peer}/p2p/peers", timeout=5.0)
+                    resp.raise_for_status()
+                except httpx.HTTPError:
+                    continue
+                self._add_peers(resp.json().get("peers", []))
 
     # --------------------------------------------------------- spot checks
     def _my_check_duty(self, receipt_hash: str) -> bool:
@@ -341,9 +420,8 @@ class NodeDaemon:
         while self._running:
             await asyncio.sleep(params.block_time * 1.5)
             state = self.chain.state
-            if state.account(self.address).stake < params.min_validator_stake:
-                continue
-            if not self.backend.deterministic:
+            account = state.account(self.address)
+            if account.stake < params.min_validator_stake or account.jailed_until > state.height:
                 continue
             for receipt in state.unchecked_receipts():
                 if receipt.node == self.address or not self._my_check_duty(receipt.receipt_hash):
@@ -377,4 +455,11 @@ class NodeDaemon:
             result = await asyncio.to_thread(self.backend.infer, request)
         except Exception:
             return None
-        return sha256_hex(result.text.encode()) == receipt.output_hash
+        return spot_check_verdict(
+            receipt_deterministic=receipt.deterministic,
+            checker_deterministic=self.backend.deterministic,
+            receipt_output_hash=receipt.output_hash,
+            recomputed_output_hash=sha256_hex(result.text.encode()),
+            receipt_tokens_out=receipt.tokens_out,
+            recomputed_tokens_out=result.tokens_out,
+        )

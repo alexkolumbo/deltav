@@ -22,6 +22,10 @@ class Account:
     balance: int = 0
     nonce: int = 0
     stake: int = 0
+    # Unstaked funds waiting out the unbonding period; still slashable.
+    unbonding: list = field(default_factory=list)  # [{"amount", "release_height"}]
+    misses: int = 0        # consecutive missed proposer slots
+    jailed_until: int = 0  # height until which the validator is jailed
 
 
 @dataclass
@@ -51,6 +55,10 @@ class Receipt:
     tokens_out: int
     price_paid: int
     height: int
+    # Whether the producing backend claims bit-reproducible output.
+    # True -> spot checks compare output hashes exactly;
+    # False -> checkers fall back to fuzzy verification (token counts).
+    deterministic: bool = True
     checked: bool = False
     check_ok: bool | None = None
 
@@ -90,11 +98,14 @@ class State:
         return sha256_hex(canonical_json(self.to_dict()))
 
     def validators(self) -> list[tuple[str, int]]:
-        """Accounts eligible to propose blocks and spot-check, sorted."""
+        """Accounts eligible to propose blocks and spot-check, sorted.
+
+        Jailed validators are excluded until their jail height passes.
+        """
         return sorted(
             (a, acc.stake)
             for a, acc in self.accounts.items()
-            if acc.stake >= self.params.min_validator_stake
+            if acc.stake >= self.params.min_validator_stake and acc.jailed_until <= self.height
         )
 
     def unchecked_receipts(self) -> list[Receipt]:
@@ -191,7 +202,10 @@ class State:
         if amount <= 0 or sender.stake < amount:
             raise StateError("invalid unstake amount")
         sender.stake -= amount
-        sender.balance += amount
+        sender.unbonding.append({
+            "amount": amount,
+            "release_height": height + self.params.unbonding_blocks,
+        })
 
     def _apply_receipt(self, tx: Tx, height: int) -> None:
         """A node claims payment for one inference job, authorized by the requester."""
@@ -212,6 +226,7 @@ class State:
         if not verify_signature(p["requester_pubkey"], auth, p["requester_sig"]):
             raise StateError("bad requester authorization signature")
 
+        deterministic = bool(p.get("deterministic", True))
         tokens_in, tokens_out = int(p["tokens_in"]), int(p["tokens_out"])
         if tokens_in < 0 or tokens_out <= 0:
             raise StateError("invalid token counts")
@@ -250,6 +265,7 @@ class State:
             tokens_out=tokens_out,
             price_paid=price,
             height=height,
+            deterministic=deterministic,
         )
 
     def _apply_spot_check(self, tx: Tx, height: int) -> None:
@@ -275,15 +291,53 @@ class State:
             if node is not None:
                 node.reputation = _clamp01(node.reputation * 0.9 + 0.1)
         else:
-            slash = int(node_acc.stake * self.params.slash_fraction)
-            node_acc.stake -= slash
-            self.supply -= slash  # burned
+            self.slash(receipt.node, self.params.slash_fraction)
             if node is not None:
                 node.reputation = _clamp01(node.reputation * 0.5)
 
         checker.balance += self.params.check_reward
         self.supply += self.params.check_reward
 
-    def apply_block_rewards(self, proposer: str, fees: int) -> None:
-        self.account(proposer).balance += self.params.block_reward + fees
+    def slash(self, address: str, fraction: float) -> int:
+        """Burn a fraction of everything at stake — bonded AND unbonding,
+        so unstaking right before getting caught doesn't dodge the penalty."""
+        acc = self.account(address)
+        total = acc.stake + sum(u["amount"] for u in acc.unbonding)
+        remaining = int(total * fraction)
+        burned = remaining
+        take = min(acc.stake, remaining)
+        acc.stake -= take
+        remaining -= take
+        for entry in acc.unbonding:
+            if remaining <= 0:
+                break
+            take = min(entry["amount"], remaining)
+            entry["amount"] -= take
+            remaining -= take
+        acc.unbonding = [u for u in acc.unbonding if u["amount"] > 0]
+        self.supply -= burned
+        return burned
+
+    def apply_block_effects(self, proposer: str, fees: int, missed: list[str], height: int) -> None:
+        """Per-block bookkeeping: release matured unbondings, punish
+        proposers that missed their slot, reward the actual proposer."""
+        for address in sorted(self.accounts):
+            acc = self.accounts[address]
+            if not acc.unbonding:
+                continue
+            matured = sum(u["amount"] for u in acc.unbonding if u["release_height"] <= height)
+            if matured:
+                acc.balance += matured
+                acc.unbonding = [u for u in acc.unbonding if u["release_height"] > height]
+
+        for address in missed:
+            acc = self.account(address)
+            acc.misses += 1
+            if acc.misses >= self.params.jail_after_misses:
+                acc.misses = 0
+                acc.jailed_until = height + self.params.jail_blocks
+
+        proposer_acc = self.account(proposer)
+        proposer_acc.misses = 0
+        proposer_acc.balance += self.params.block_reward + fees
         self.supply += self.params.block_reward
