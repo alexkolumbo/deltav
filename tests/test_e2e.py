@@ -104,8 +104,11 @@ async def test_full_pipeline(network):
         return r if r else None
     receipts = await wait_for(receipt_on_chain)
     assert receipts[0]["node"] == serving_node
-    gw_acc = (await client.get(f"{URLS[0]}/chain/account/{gw_key.address}")).json()
-    assert gw_acc["balance"] == 50_000 * DVT - receipts[0]["price_paid"]
+
+    async def gateway_charged():
+        acc = (await client.get(f"{URLS[0]}/chain/account/{gw_key.address}")).json()
+        return acc if acc["balance"] == 50_000 * DVT - receipts[0]["price_paid"] else None
+    await wait_for(gateway_charged)  # node 0 may see the receipt block a beat later
 
     # 4. The other validator spot-checks the receipt by re-executing the job.
     async def checked():

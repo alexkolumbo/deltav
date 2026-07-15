@@ -149,7 +149,9 @@ def _cmd_gateway(args: argparse.Namespace) -> int:
     keypair = load_or_create(args.wallet or wallet_path("gateway"))
     params = Genesis.load(args.genesis).params if args.genesis else ChainParams()
     daemon = GatewayDaemon(keypair, node_urls=args.node, params=params,
-                           memory_path=args.memory_file or None)
+                           memory_path=args.memory_file or None,
+                           keys_path=args.keys_file or None,
+                           require_keys=args.require_keys)
     print(f"gateway {keypair.address} on http://{args.host}:{args.port} -> nodes {args.node}")
 
     async def run() -> None:
@@ -226,6 +228,33 @@ def _cmd_models(args: argparse.Namespace) -> int:
         served = f"{len(d['served_by'])} node(s)" if d["served_by"] else "no live nodes"
         print(f"{m['id']}\n    {d['params_b']}B {d['quant']} "
               f"~{d['vram_needed_mb']}MB quality={d['quality']} -> {served}")
+    return 0
+
+
+def _cmd_keys(args: argparse.Namespace) -> int:
+    import httpx
+
+    if args.action == "create":
+        data = httpx.post(f"{args.gateway}/v1/keys",
+                          json={"label": args.label}, timeout=15.0).json()
+        print(f"api_key : {data['api_key']}   (показывается ОДИН раз)")
+        print(f"address : {data['address']}")
+        print(f"note    : {data['note']}")
+    else:  # me
+        if not args.key:
+            print("нужен --key dvk_...", file=sys.stderr)
+            return 1
+        resp = httpx.get(f"{args.gateway}/v1/keys/me",
+                         headers={"Authorization": f"Bearer {args.key}"}, timeout=15.0)
+        if resp.status_code != 200:
+            print(f"error {resp.status_code}: {resp.text}", file=sys.stderr)
+            return 1
+        d = resp.json()
+        print(f"label    : {d['label'] or '—'}")
+        print(f"address  : {d['address']}")
+        print(f"balance  : {d['balance_udvt'] / DVT:,.6f} DVT")
+        print(f"usage    : {d['requests']} запросов, {d['tokens']} токенов, "
+              f"~{d['spent_udvt_estimate'] / DVT:,.6f} DVT")
     return 0
 
 
@@ -428,7 +457,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_gw.add_argument("--node", action="append", required=True, help="node base URL (repeatable)")
     p_gw.add_argument("--memory-file", default="",
                       help="persist agent session memory to this jsonl file")
+    p_gw.add_argument("--keys-file", default="",
+                      help="persist API keys (custodial billing wallets) here")
+    p_gw.add_argument("--require-keys", action="store_true",
+                      help="reject requests without a funded dvk_ API key")
     p_gw.set_defaults(func=_cmd_gateway)
+
+    p_keys = sub.add_parser("keys", help="gateway API keys (billing wallets)")
+    p_keys.add_argument("action", choices=["create", "me"])
+    p_keys.add_argument("--gateway", default="http://127.0.0.1:9000")
+    p_keys.add_argument("--label", default="")
+    p_keys.add_argument("--key", default="", help="dvk_... for 'me'")
+    p_keys.set_defaults(func=_cmd_keys)
 
     p_sim = sub.add_parser("sim", help="run a local simulated network")
     p_sim.add_argument("--nodes", type=int, default=3)

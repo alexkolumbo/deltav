@@ -16,8 +16,10 @@ import uuid
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
+
+from .keys import KEY_PREFIX, KeyRecord, KeyStore
 
 from ..config import ChainParams
 from ..crypto import KeyPair
@@ -55,6 +57,8 @@ class GatewayDaemon:
         client: httpx.AsyncClient | None = None,
         tools: ToolRegistry | None = None,
         memory_path: str | None = None,
+        keys_path: str | None = None,
+        require_keys: bool = False,
     ):
         self.keypair = keypair
         self.node_urls = node_urls
@@ -74,7 +78,52 @@ class GatewayDaemon:
         # Memory embeds through the network's own paid embedding jobs and
         # falls back to BM25 when no embedding node is live.
         self.memory = VectorMemory(memory_path, embedder=self._embed_texts)
+        # Billing: API keys are custodial on-chain wallets.
+        self.keys = KeyStore(keys_path)
+        self.require_keys = require_keys
         self.app = self._build_app()
+
+    # ------------------------------------------------------------- billing
+    async def _requester_from(self, request: Request) -> tuple[KeyPair, KeyRecord | None]:
+        """Resolve the paying wallet for a request.
+
+        dvk_ tokens must resolve (401 otherwise); anything else — goose
+        and friends send placeholder api keys — is anonymous, allowed
+        only when require_keys is off (then the gateway wallet pays)."""
+        auth = request.headers.get("authorization", "")
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        if token.startswith(KEY_PREFIX):
+            record = self.keys.resolve(token)
+            if record is None:
+                raise HTTPException(401, "unknown API key")
+            return self.keys.keypair(record), record
+        if self.require_keys:
+            raise HTTPException(401, "API key required: POST /v1/keys, then fund its address")
+        return self.keypair, None
+
+    async def _onchain_balance(self, address: str) -> int:
+        for url in self.node_urls:
+            try:
+                resp = await self.client.get(f"{url}/chain/account/{address}", timeout=5.0)
+                resp.raise_for_status()
+                return int(resp.json()["balance"])
+            except httpx.HTTPError:
+                continue
+        raise HTTPException(503, "no node reachable to check balance")
+
+    async def _precheck_funds(self, record: KeyRecord | None,
+                              prompt: str, max_tokens: int) -> None:
+        """Fail with 402 BEFORE inference: an underfunded receipt would be
+        rejected on-chain and the node would have worked for free."""
+        if record is None:
+            return
+        needed = self.router.estimate_price_limit(prompt, max_tokens)
+        balance = await self._onchain_balance(record.address)
+        if balance < needed:
+            raise HTTPException(
+                402,
+                f"insufficient DVT: balance {balance} udvt, need ~{needed}; "
+                f"top up {record.address}")
 
     async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not self.router.nodes:
@@ -192,6 +241,30 @@ class GatewayDaemon:
                 })
             return {"object": "list", "data": data}
 
+        @app.post("/v1/keys")
+        async def keys_create(body: dict | None = None) -> dict:
+            api_key, record = self.keys.create(label=(body or {}).get("label", ""))
+            return {
+                "api_key": api_key,   # shown exactly once
+                "address": record.address,
+                "note": "fund this address with DVT (deltav send --to <address>); "
+                        "requests are paid from it on-chain",
+            }
+
+        @app.get("/v1/keys/me")
+        async def keys_me(request: Request) -> dict:
+            _, record = await self._requester_from(request)
+            if record is None:
+                raise HTTPException(401, "pass your dvk_ API key as a Bearer token")
+            return {
+                "label": record.label,
+                "address": record.address,
+                "balance_udvt": await self._onchain_balance(record.address),
+                "requests": record.requests,
+                "tokens": record.tokens,
+                "spent_udvt_estimate": record.spent_udvt,
+            }
+
         @app.get("/v1/plan")
         async def plan_endpoint(vram_mb: int, objective: str = "balanced") -> dict:
             """Model planner enriched with live network state: which of the
@@ -220,7 +293,8 @@ class GatewayDaemon:
             return {"query": q, "results": results}
 
         @app.post("/v1/agents/run")
-        async def agents_run(body: dict) -> dict:
+        async def agents_run(body: dict, request: Request) -> dict:
+            payer, record = await self._requester_from(request)
             task = body.get("task", "").strip()
             if not task:
                 raise HTTPException(400, "task required")
@@ -228,6 +302,9 @@ class GatewayDaemon:
             session_id = (body.get("session_id") or "").strip() or None
             max_steps = min(int(body.get("max_steps", 6)), 16)
             await self.router.refresh(self.node_urls)
+            await self._precheck_funds(record, task, int(body.get("max_tokens", 512)) * 2)
+
+            spent = {"tokens": 0}
 
             async def complete(prompt: str) -> tuple[str, dict]:
                 result = await self.router.route(
@@ -235,7 +312,9 @@ class GatewayDaemon:
                     max_tokens=int(body.get("max_tokens", 512)),
                     temperature=float(body.get("temperature") or 0.0),
                     seed=int(body.get("seed") or 0),
+                    requester=payer,
                 )
+                spent["tokens"] += result.tokens_in + result.tokens_out
                 return result.text, {"node": result.node, "receipt_tx": result.receipt_tx}
 
             registry = self._agent_registry(complete, session_id, max_steps)
@@ -253,6 +332,9 @@ class GatewayDaemon:
                 result = await agent.run(agent_task)
             except RouteError as exc:
                 raise HTTPException(503, str(exc))
+            if record is not None:
+                self.keys.record_usage(record, spent["tokens"],
+                                       spent["tokens"] * self.params.price_per_token)
             return {
                 "task": task,
                 "session_id": session_id,
@@ -283,16 +365,22 @@ class GatewayDaemon:
                               for it in items]}
 
         @app.post("/v1/embeddings")
-        async def embeddings(body: dict) -> dict:
+        async def embeddings(body: dict, request: Request) -> dict:
+            payer, record = await self._requester_from(request)
             raw = body.get("input")
             texts = [raw] if isinstance(raw, str) else [str(t) for t in (raw or [])]
             if not texts:
                 raise HTTPException(400, "input required")
             await self.router.refresh(self.node_urls)
+            await self._precheck_funds(record, " ".join(texts), 16 * len(texts))
             try:
-                result = await self.router.route_embed(texts, model=body.get("model", "auto"))
+                result = await self.router.route_embed(texts, model=body.get("model", "auto"),
+                                                       requester=payer)
             except RouteError as exc:
                 raise HTTPException(503, str(exc))
+            if record is not None:
+                self.keys.record_usage(record, result.tokens,
+                                       result.tokens * self.params.price_per_token)
             return {
                 "object": "list",
                 "model": result.model_ref,
@@ -306,13 +394,17 @@ class GatewayDaemon:
             }
 
         @app.post("/v1/chat/completions")
-        async def chat_completions(body: dict):
+        async def chat_completions(body: dict, request: Request):
+            payer, record = await self._requester_from(request)
             messages = body.get("messages") or []
             if not messages:
                 raise HTTPException(400, "messages required")
             tools = body.get("tools") or None
             prompt = render_prompt(messages, tools)
             await self.router.refresh(self.node_urls)
+            await self._precheck_funds(
+                record, prompt,
+                int(body.get("max_tokens") or body.get("max_completion_tokens") or 256))
 
             if body.get("stream") and not tools:
                 # True end-to-end streaming: tokens flow node -> gateway ->
@@ -325,6 +417,7 @@ class GatewayDaemon:
                         max_tokens=int(body.get("max_tokens") or body.get("max_completion_tokens") or 256),
                         temperature=float(body.get("temperature") or 0.0),
                         seed=int(body.get("seed") or 0),
+                        requester=payer,
                     )
                     first = await upstream.__anext__()  # fail as HTTP 503, not mid-stream
                 except (RouteError, StopAsyncIteration) as exc:
@@ -343,9 +436,13 @@ class GatewayDaemon:
                     max_tokens=int(body.get("max_tokens") or body.get("max_completion_tokens") or 256),
                     temperature=float(body.get("temperature") or 0.0),
                     seed=int(body.get("seed") or 0),
+                    requester=payer,
                 )
             except RouteError as exc:
                 raise HTTPException(503, str(exc))
+            if record is not None:
+                total = result.tokens_in + result.tokens_out
+                self.keys.record_usage(record, total, total * self.params.price_per_token)
 
             completion_id = f"dvcmpl-{uuid.uuid4().hex[:24]}"
             created = int(time.time())

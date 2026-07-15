@@ -36,9 +36,11 @@ SMART_CONTEXT_CHARS = 500
 
 class TgBot:
     def __init__(self, token: str, gateway: str, allow: set[int] | None = None,
-                 client: httpx.AsyncClient | None = None):
+                 client: httpx.AsyncClient | None = None, api_key: str = ""):
         self.api = f"https://api.telegram.org/bot{token}"
         self.gateway = gateway.rstrip("/")
+        # dvk_ key -> the bot's requests are billed to that on-chain wallet
+        self.gw_headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self.allow = allow or set()
         self.client = client or httpx.AsyncClient(timeout=330.0)
         self.histories: dict[int, list[dict]] = {}
@@ -78,7 +80,7 @@ class TgBot:
     async def do_chat(self, chat_id: int, text: str) -> str:
         history = self.history(chat_id)
         history.append({"role": "user", "content": text})
-        resp = await self.client.post(f"{self.gateway}/v1/chat/completions", json={
+        resp = await self.client.post(f"{self.gateway}/v1/chat/completions", headers=self.gw_headers, json={
             "model": self.models.get(chat_id, "auto"),
             "messages": history,
             "max_tokens": MAX_TOKENS,
@@ -98,7 +100,7 @@ class TgBot:
         return answer + footer
 
     async def do_agent(self, chat_id: int, task: str) -> str:
-        resp = await self.client.post(f"{self.gateway}/v1/agents/run", json={
+        resp = await self.client.post(f"{self.gateway}/v1/agents/run", headers=self.gw_headers, json={
             "task": task,
             "model": self.models.get(chat_id, "auto"),
             "max_steps": 6,
@@ -131,7 +133,7 @@ class TgBot:
         return answer
 
     async def do_models(self) -> str:
-        data = (await self.client.get(f"{self.gateway}/v1/models")).json()
+        data = (await self.client.get(f"{self.gateway}/v1/models", headers=self.gw_headers)).json()
         lines = ["Модели на сети:"]
         for m in data["data"]:
             served = len(m["deltav"]["served_by"])
@@ -141,7 +143,7 @@ class TgBot:
         return "\n".join(lines)
 
     async def do_net(self) -> str:
-        data = (await self.client.get(f"{self.gateway}/network")).json()
+        data = (await self.client.get(f"{self.gateway}/network", headers=self.gw_headers)).json()
         lines = [f"Высота чейна: {data['height']}"]
         for n in data["nodes"]:
             dot = "🟢" if n["alive"] else "🔴"
@@ -150,8 +152,7 @@ class TgBot:
         return "\n".join(lines)
 
     async def do_plan(self, vram: int) -> str:
-        data = (await self.client.get(f"{self.gateway}/v1/plan",
-                                      params={"vram_mb": vram})).json()
+        data = (await self.client.get(f"{self.gateway}/v1/plan", headers=self.gw_headers, params={"vram_mb": vram})).json()
         lines = [f"План для {vram} MB VRAM:"]
         for o in data["options"][:5]:
             warm = " 🔥" if o.get("already_served_on_network") else ""
@@ -261,7 +262,7 @@ def main() -> int:
         return 1
     gateway = os.environ.get("DELTAV_GATEWAY", "http://127.0.0.1:9000")
     allow = {int(x) for x in os.environ.get("DELTAV_ALLOW", "").split(",") if x.strip()}
-    bot = TgBot(token, gateway, allow)
+    bot = TgBot(token, gateway, allow, api_key=os.environ.get("DELTAV_API_KEY", ""))
     asyncio.run(bot.run())
     return 0
 

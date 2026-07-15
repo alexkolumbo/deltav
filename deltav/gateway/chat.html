@@ -64,6 +64,13 @@ let messages = [];
 let busy = false;
 let agentMode = false;
 const sessionId = localStorage.dvSession || (localStorage.dvSession = "web-" + Math.random().toString(36).slice(2, 10));
+// API key (billing wallet): open /chat#key=dvk_... once to store it.
+if (location.hash.startsWith("#key=")) {
+  localStorage.dvKey = location.hash.slice(5);
+  history.replaceState(null, "", location.pathname);
+}
+const HEADERS = { "Content-Type": "application/json" };
+if (localStorage.dvKey) HEADERS["Authorization"] = "Bearer " + localStorage.dvKey;
 
 function el(cls, text) {
   const div = document.createElement("div");
@@ -93,7 +100,7 @@ async function sendChat(text) {
   const bubble = el("msg bot pending", "");
   let acc = "", meta = null;
   const resp = await fetch("/v1/chat/completions", {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: HEADERS,
     body: JSON.stringify({ model: $("model").value, messages, stream: true, max_tokens: 1024 }),
   });
   if (!resp.ok) {
@@ -131,7 +138,7 @@ async function sendChat(text) {
 async function sendAgent(text) {
   const bubble = el("msg bot pending", "агент думает…");
   const resp = await fetch("/v1/agents/run", {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: HEADERS,
     body: JSON.stringify({ task: text, model: $("model").value, max_steps: 6, session_id: sessionId }),
   });
   const d = await resp.json();

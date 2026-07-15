@@ -156,11 +156,16 @@ class SmartRouter:
                 if score_node(n, spec.ref, self.chain_height, self.price_per_token) > float("-inf")]
 
     # ------------------------------------------------------------ dispatch
+    def estimate_price_limit(self, prompt: str, max_tokens: int) -> int:
+        return (max_tokens + len(prompt.split()) + 64) * self.price_per_token * 2
+
     def _infer_body(self, node: NodeView, spec: ModelSpec, prompt: str,
-                    max_tokens: int, temperature: float, seed: int) -> dict[str, Any]:
+                    max_tokens: int, temperature: float, seed: int,
+                    requester: KeyPair | None = None) -> dict[str, Any]:
+        payer = requester or self.requester
         req_hash = request_hash_for(prompt, spec.ref, max_tokens, seed)
-        price_limit = (max_tokens + len(prompt.split()) + 64) * self.price_per_token * 2
-        auth_sig = self.requester.sign(
+        price_limit = self.estimate_price_limit(prompt, max_tokens)
+        auth_sig = payer.sign(
             receipt_auth_bytes(req_hash, node.address, spec.ref, price_limit)
         )
         return {
@@ -169,8 +174,8 @@ class SmartRouter:
             "max_tokens": max_tokens,
             "temperature": temperature,
             "seed": seed,
-            "requester": self.requester.address,
-            "requester_pubkey": self.requester.public_hex,
+            "requester": payer.address,
+            "requester_pubkey": payer.public_hex,
             "requester_sig": auth_sig,
             "price_limit": price_limit,
         }
@@ -182,6 +187,7 @@ class SmartRouter:
         max_tokens: int = 256,
         temperature: float = 0.0,
         seed: int = 0,
+        requester: KeyPair | None = None,
     ) -> RouteResult:
         spec = self.resolve_model(model)
         candidates = self.rank_nodes(spec)
@@ -190,7 +196,8 @@ class SmartRouter:
 
         errors: list[str] = []
         for attempt, node in enumerate(candidates, start=1):
-            body = self._infer_body(node, spec, prompt, max_tokens, temperature, seed)
+            body = self._infer_body(node, spec, prompt, max_tokens, temperature, seed,
+                                    requester)
             try:
                 resp = await self.client.post(f"{node.endpoint}/infer", json=body, timeout=300.0)
                 resp.raise_for_status()
@@ -218,6 +225,7 @@ class SmartRouter:
         max_tokens: int = 256,
         temperature: float = 0.0,
         seed: int = 0,
+        requester: KeyPair | None = None,
     ):
         """End-to-end token streaming: yields ("token", str) pieces as the
         node generates them, then ("final", RouteResult). Failover happens
@@ -230,7 +238,8 @@ class SmartRouter:
 
         errors: list[str] = []
         for attempt, node in enumerate(candidates, start=1):
-            body = self._infer_body(node, spec, prompt, max_tokens, temperature, seed)
+            body = self._infer_body(node, spec, prompt, max_tokens, temperature, seed,
+                                    requester)
             body["stream"] = True
             pieces: list[str] = []
             try:
@@ -291,9 +300,11 @@ class SmartRouter:
                              kind="embedding")
         raise RouteError(f"no embedding model {model!r} on the network")
 
-    async def route_embed(self, texts: list[str], model: str = "auto") -> EmbedRouteResult:
+    async def route_embed(self, texts: list[str], model: str = "auto",
+                          requester: KeyPair | None = None) -> EmbedRouteResult:
         if not texts:
             raise RouteError("no texts to embed")
+        payer = requester or self.requester
         spec = self.resolve_embedding_model(model)
         candidates = self.rank_nodes(spec)
         if not candidates:
@@ -304,14 +315,14 @@ class SmartRouter:
             req_hash = sha256_hex(canonical_json({"texts": texts, "model": spec.ref}))
             total_words = sum(len(t.split()) for t in texts)
             price_limit = (total_words + 16 * len(texts) + 64) * self.price_per_token * 2
-            auth_sig = self.requester.sign(
+            auth_sig = payer.sign(
                 receipt_auth_bytes(req_hash, node.address, spec.ref, price_limit)
             )
             body = {
                 "texts": texts,
                 "model": spec.ref,
-                "requester": self.requester.address,
-                "requester_pubkey": self.requester.public_hex,
+                "requester": payer.address,
+                "requester_pubkey": payer.public_hex,
                 "requester_sig": auth_sig,
                 "price_limit": price_limit,
             }
