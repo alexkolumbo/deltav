@@ -86,6 +86,7 @@ def _cmd_node(args: argparse.Namespace) -> int:
         stake=int(args.stake * DVT),
         data_dir=args.data_dir,
         max_parallel_jobs=args.parallel,
+        price_per_token=args.price,
     )
     _run_node(keypair, genesis, cfg)
     return 0
@@ -134,6 +135,7 @@ def _cmd_join(args: argparse.Namespace) -> int:
         stake=int(args.stake * DVT),
         data_dir=data_dir,
         max_parallel_jobs=args.parallel,
+        price_per_token=args.price,
     )
     _run_node(keypair, genesis, cfg)
     return 0
@@ -205,10 +207,11 @@ def _cmd_network(args: argparse.Namespace) -> int:
     for n in nodes:
         hw = n["hardware"]
         jailed = " JAILED" if n.get("jailed_until", 0) > stats["height"] else ""
+        price = n.get("price_per_token", 0) or "default"
         print(f"  {n['address'][:16]}... {n['endpoint']:<28} "
               f"{hw.get('vendor', '?')}/{hw.get('vram_mb', '?')}MB "
               f"rep={n['reputation']:.3f} stake={n['stake'] / DVT:,.0f} "
-              f"jobs={n['jobs_done']}{jailed}")
+              f"price={price} jobs={n['jobs_done']}{jailed}")
         for m in n["models"]:
             print(f"      - {m}")
     return 0
@@ -319,6 +322,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_node.add_argument("--data-dir", default="", help="persist the chain to this directory")
     p_node.add_argument("--parallel", type=int, default=1,
                         help="concurrent inference jobs (keep 1 per GPU)")
+    p_node.add_argument("--price", type=int, default=0,
+                        help="asking price in udvt per token (0 = network default)")
     p_node.set_defaults(func=_cmd_node)
 
     p_join = sub.add_parser(
@@ -335,6 +340,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_join.add_argument("--data-dir", default="")
     p_join.add_argument("--parallel", type=int, default=1,
                         help="concurrent inference jobs (keep 1 per GPU)")
+    p_join.add_argument("--price", type=int, default=0,
+                        help="asking price in udvt per token (0 = network default)")
     p_join.set_defaults(func=_cmd_join)
 
     p_bal = sub.add_parser("balance", help="show an account")

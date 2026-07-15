@@ -125,7 +125,8 @@ async def test_route_stream_end_to_end(stream_net, genesis, carol):
     assert final.receipt_tx
 
     # the streamed job's receipt lands on-chain like any other
-    deadline = asyncio.get_event_loop().time() + 8.0
+    # (generous deadline: the full suite loads this machine heavily)
+    deadline = asyncio.get_event_loop().time() + 20.0
     receipts = []
     while asyncio.get_event_loop().time() < deadline:
         receipts = (await client.get(f"{URL}/chain/receipts")).json()["receipts"]

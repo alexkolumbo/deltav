@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 
-from .base import ComputeBackend, InferRequest, InferResult, register_backend
+from .base import ComputeBackend, EmbedRequest, EmbedResult, InferRequest, InferResult, register_backend
 
 
 def _split_ref(model_ref: str) -> tuple[str, str | None]:
@@ -104,6 +104,41 @@ class LlamaCppBackend(ComputeBackend):
             model_ref=request.model_ref,
             backend=self.name,
             deterministic=request.temperature == 0.0,
+        )
+
+    # Embeddings: load the GGUF with embedding=True (e.g. nomic-embed-text);
+    # llama.cpp embeds the whole batch natively in one pass.
+    supports_embeddings = True
+
+    def _load_embedder(self, model_ref: str):
+        key = f"embed::{model_ref}"
+        if key not in self._models:
+            from llama_cpp import Llama
+
+            repo, filename = _split_ref(model_ref)
+            self._models[key] = Llama.from_pretrained(
+                repo_id=repo,
+                filename=filename or "*Q4_K_M.gguf",
+                n_ctx=2048,
+                n_gpu_layers=self.n_gpu_layers,
+                embedding=True,
+                verbose=False,
+            )
+        return self._models[key]
+
+    def embed(self, request: EmbedRequest) -> EmbedResult:
+        model = self._load_embedder(request.model_ref)
+        vectors = model.embed(request.texts)
+        try:
+            tokens = sum(len(model.tokenize(t.encode())) for t in request.texts)
+        except Exception:
+            tokens = sum(max(1, len(t.split())) for t in request.texts)
+        return EmbedResult(
+            vectors=[list(map(float, v)) for v in vectors],
+            tokens=tokens,
+            model_ref=request.model_ref,
+            backend=self.name,
+            deterministic=False,  # GPU float nondeterminism across machines
         )
 
     def unload(self, model_ref: str | None = None) -> None:

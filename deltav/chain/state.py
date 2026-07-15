@@ -34,6 +34,10 @@ class NodeInfo:
     endpoint: str
     hardware: dict = field(default_factory=dict)  # vendor / device / vram_mb / backend
     models: list[str] = field(default_factory=list)
+    # The node's asking price in udvt per token; 0 = network default.
+    # Receipts pay THIS price (capped by the requester's signed limit),
+    # so nodes compete on price and the router prefers cheaper ones.
+    price_per_token: int = 0
     reputation: float = 0.5
     jobs_done: int = 0
     tokens_served: int = 0
@@ -164,12 +168,14 @@ class State:
             raise StateError("register_node needs an endpoint")
         hardware = dict(tx.payload.get("hardware", {}))
         models = list(tx.payload.get("models", []))
+        price = max(0, int(tx.payload.get("price_per_token", 0)))
         existing = self.nodes.get(tx.sender)
         if existing is not None:
             existing.endpoint = endpoint
             existing.hardware = hardware
             if models:
                 existing.models = models
+            existing.price_per_token = price
             existing.last_seen = height
             existing.active = True
         else:
@@ -178,6 +184,7 @@ class State:
                 endpoint=endpoint,
                 hardware=hardware,
                 models=models,
+                price_per_token=price,
                 registered_at=height,
                 last_seen=height,
             )
@@ -187,6 +194,8 @@ class State:
         if node is None:
             raise StateError("node not registered")
         node.models = list(tx.payload.get("models", []))
+        if "price_per_token" in tx.payload:
+            node.price_per_token = max(0, int(tx.payload["price_per_token"]))
         node.last_seen = height
         node.active = bool(tx.payload.get("active", True))
 
@@ -234,7 +243,8 @@ class State:
         tokens_in, tokens_out = int(p["tokens_in"]), int(p["tokens_out"])
         if tokens_in < 0 or tokens_out <= 0:
             raise StateError("invalid token counts")
-        price = (tokens_in + tokens_out) * self.params.price_per_token
+        effective_price = node.price_per_token or self.params.price_per_token
+        price = (tokens_in + tokens_out) * effective_price
         if price > int(p["price_limit"]):
             raise StateError("price exceeds requester's authorized limit")
 

@@ -337,12 +337,17 @@ async def test_chain_survives_dead_validator(params):
             await asyncio.sleep(0.05)
         assert survivor.chain.height >= start_height + 4, \
             "chain stalled after a validator died"
-        # the dead validator's missed slots are being recorded
+        # Every block after the death was either produced by the survivor at
+        # its own slot 0, or via a fallback slot — and fallback use must have
+        # charged the dead proposer with misses. (RANDAO makes the schedule
+        # random, so the dead validator may legitimately never be drawn.)
         dead = node_keys[0].address
-        slots_used = {b.slot for b in survivor.chain.blocks[start_height + 1:]}
-        assert any(s > 0 for s in slots_used)
-        assert survivor.chain.state.account(dead).misses > 0 or \
-            survivor.chain.state.account(dead).jailed_until > 0
+        tail = survivor.chain.blocks[start_height + 1:]
+        assert all(b.proposer == node_keys[1].address for b in tail)
+        used_fallback = any(b.slot > 0 for b in tail)
+        dead_acc = survivor.chain.state.account(dead)
+        if used_fallback:
+            assert dead_acc.misses > 0 or dead_acc.jailed_until > 0
     finally:
         for d in daemons:
             await d.stop()

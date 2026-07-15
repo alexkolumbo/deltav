@@ -39,6 +39,16 @@ class RouteResult:
     attempts: int
 
 
+@dataclass
+class EmbedRouteResult:
+    vectors: list[list[float]]
+    model_ref: str
+    node: str
+    tokens: int
+    receipt_tx: str | None
+    attempts: int
+
+
 def request_hash_for(prompt: str, model_ref: str, max_tokens: int, seed: int) -> str:
     return sha256_hex(canonical_json(
         {"prompt": prompt, "model": model_ref, "max_tokens": max_tokens, "seed": seed}
@@ -82,6 +92,7 @@ class SmartRouter:
                     stake=int(n.get("stake", 0)),
                     last_seen=int(n.get("last_seen", 0)),
                     active=bool(n.get("active", True)),
+                    price_per_token=int(n.get("price_per_token", 0)),
                 )
             break  # one healthy chain source is enough for the registry
         for node in registry.values():
@@ -134,10 +145,11 @@ class SmartRouter:
         candidates = [n for n in self.nodes if self._servable(spec, n)]
         ranked = sorted(
             candidates,
-            key=lambda n: score_node(n, spec.ref, self.chain_height),
+            key=lambda n: score_node(n, spec.ref, self.chain_height, self.price_per_token),
             reverse=True,
         )
-        return [n for n in ranked if score_node(n, spec.ref, self.chain_height) > float("-inf")]
+        return [n for n in ranked
+                if score_node(n, spec.ref, self.chain_height, self.price_per_token) > float("-inf")]
 
     # ------------------------------------------------------------ dispatch
     def _infer_body(self, node: NodeView, spec: ModelSpec, prompt: str,
@@ -253,4 +265,66 @@ class SmartRouter:
                 node.alive = False
                 continue
             raise RouteError("node stream ended without a final event")
+        raise RouteError("all candidate nodes failed: " + "; ".join(errors))
+
+    # ---------------------------------------------------------- embeddings
+    def resolve_embedding_model(self, model: str = "auto") -> ModelSpec:
+        live = [n for n in self.nodes if n.alive and n.active]
+        if not live:
+            raise RouteError("no live nodes on the network")
+        if model in ("auto", "", None):
+            for spec in self.catalog.embedding_specs():
+                if any(self._servable(spec, n) for n in live):
+                    return spec
+            raise RouteError("no embedding model is servable by any live node")
+        spec = self.catalog.by_ref(model)
+        if spec is not None and spec.kind == "embedding":
+            return spec
+        if any(model in n.models for n in live):
+            repo, _, filename = model.partition("::")
+            return ModelSpec(repo_id=repo, filename=filename, family="external",
+                             params_b=0.0, quant="api", file_mb=0, quality=0.5,
+                             kind="embedding")
+        raise RouteError(f"no embedding model {model!r} on the network")
+
+    async def route_embed(self, texts: list[str], model: str = "auto") -> EmbedRouteResult:
+        if not texts:
+            raise RouteError("no texts to embed")
+        spec = self.resolve_embedding_model(model)
+        candidates = self.rank_nodes(spec)
+        if not candidates:
+            raise RouteError(f"no node can serve {spec.ref}")
+
+        errors: list[str] = []
+        for attempt, node in enumerate(candidates, start=1):
+            req_hash = sha256_hex(canonical_json({"texts": texts, "model": spec.ref}))
+            total_words = sum(len(t.split()) for t in texts)
+            price_limit = (total_words + 16 * len(texts) + 64) * self.price_per_token * 2
+            auth_sig = self.requester.sign(
+                receipt_auth_bytes(req_hash, node.address, spec.ref, price_limit)
+            )
+            body = {
+                "texts": texts,
+                "model": spec.ref,
+                "requester": self.requester.address,
+                "requester_pubkey": self.requester.public_hex,
+                "requester_sig": auth_sig,
+                "price_limit": price_limit,
+            }
+            try:
+                resp = await self.client.post(f"{node.endpoint}/embed", json=body, timeout=120.0)
+                resp.raise_for_status()
+                data = resp.json()
+            except httpx.HTTPError as exc:
+                errors.append(f"{node.address[:12]}: {exc}")
+                node.alive = False
+                continue
+            return EmbedRouteResult(
+                vectors=data["vectors"],
+                model_ref=spec.ref,
+                node=node.address,
+                tokens=int(data.get("tokens", 0)),
+                receipt_tx=data.get("receipt_tx"),
+                attempts=attempt,
+            )
         raise RouteError("all candidate nodes failed: " + "; ".join(errors))

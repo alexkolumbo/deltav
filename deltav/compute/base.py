@@ -59,6 +59,21 @@ class InferResult:
     deterministic: bool = True
 
 
+@dataclass
+class EmbedRequest:
+    texts: list[str]
+    model_ref: str
+
+
+@dataclass
+class EmbedResult:
+    vectors: list[list[float]]
+    tokens: int
+    model_ref: str
+    backend: str
+    deterministic: bool = True
+
+
 class ComputeBackend(ABC):
     """One accelerator (or accelerator family) able to run LLM inference."""
 
@@ -91,6 +106,13 @@ class ComputeBackend(ABC):
         if result.text:
             yield result.text
         yield result
+
+    # Whether this backend can serve embedding jobs.
+    supports_embeddings: bool = False
+
+    def embed(self, request: EmbedRequest) -> EmbedResult:
+        """Embed a batch of texts in one pass (native batching)."""
+        raise NotImplementedError(f"backend {self.name} does not support embeddings")
 
     def unload(self, model_ref: str | None = None) -> None:  # noqa: B027 - optional hook
         """Free memory; default no-op."""

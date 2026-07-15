@@ -25,6 +25,7 @@ class ModelSpec:
     file_mb: int            # size of the GGUF file
     quality: float          # rough capability score 0..1 for auto-routing
     ctx: int = 4096
+    kind: str = "chat"      # "chat" | "embedding"
 
     @property
     def ref(self) -> str:
@@ -69,6 +70,9 @@ CURATED_CATALOG: list[ModelSpec] = [
               "qwen2.5", 32.8, "Q4_K_M", 19900, 0.90),
     ModelSpec("bartowski/Llama-3.3-70B-Instruct-GGUF", "Llama-3.3-70B-Instruct-Q4_K_M.gguf",
               "llama3", 70.6, "Q4_K_M", 42500, 0.95),
+    # Embedding models (routed by kind, never picked for chat).
+    ModelSpec("nomic-ai/nomic-embed-text-v1.5-GGUF", "nomic-embed-text-v1.5.Q4_K_M.gguf",
+              "nomic", 0.14, "Q4_K_M", 84, 0.60, ctx=2048, kind="embedding"),
 ]
 
 
@@ -82,14 +86,19 @@ class Catalog:
                 return spec
         return None
 
-    def fitting(self, vram_mb: int, ctx: int | None = None) -> list[ModelSpec]:
-        """Models that fit the given VRAM, best quality first."""
-        fits = [s for s in self.specs if estimate_vram_mb(s, ctx) <= vram_mb]
+    def fitting(self, vram_mb: int, ctx: int | None = None, kind: str = "chat") -> list[ModelSpec]:
+        """Models of `kind` that fit the given VRAM, best quality first."""
+        fits = [s for s in self.specs
+                if s.kind == kind and estimate_vram_mb(s, ctx) <= vram_mb]
         return sorted(fits, key=lambda s: (-s.quality, s.file_mb))
 
-    def best_for(self, vram_mb: int, ctx: int | None = None) -> ModelSpec | None:
-        fits = self.fitting(vram_mb, ctx)
+    def best_for(self, vram_mb: int, ctx: int | None = None, kind: str = "chat") -> ModelSpec | None:
+        fits = self.fitting(vram_mb, ctx, kind)
         return fits[0] if fits else None
+
+    def embedding_specs(self) -> list[ModelSpec]:
+        return sorted((s for s in self.specs if s.kind == "embedding"),
+                      key=lambda s: -s.quality)
 
     def refresh_from_hf(self, limit: int = 30) -> int:
         """Optionally enrich the catalog from the live HuggingFace Hub.

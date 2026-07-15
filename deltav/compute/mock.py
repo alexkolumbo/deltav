@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-from .base import ComputeBackend, InferRequest, InferResult, register_backend
+from .base import ComputeBackend, EmbedRequest, EmbedResult, InferRequest, InferResult, register_backend
 
 # Scripted-reply marker: a prompt containing [[reply]]...[[/reply]] gets that
 # text back verbatim (still deterministic). Lets tests and demos drive
@@ -78,6 +78,29 @@ class MockBackend(ComputeBackend):
         for piece in re.findall(r"\S+\s*", result.text) or [result.text]:
             yield piece
         yield result
+
+    # Deterministic hashed bag-of-words embedding: shared words -> shared
+    # buckets -> real cosine similarity, so vector-RAG is testable end to
+    # end without an embedding model.
+    supports_embeddings = True
+    EMBED_DIM = 64
+
+    def embed(self, request: EmbedRequest) -> EmbedResult:
+        self.load(request.model_ref)
+        vectors = []
+        for text in request.texts:
+            vec = [0.0] * self.EMBED_DIM
+            for word in text.lower().split():
+                digest = hashlib.sha256(f"{request.model_ref}|{word}".encode()).digest()
+                vec[digest[0] % self.EMBED_DIM] += 1.0
+            norm = sum(x * x for x in vec) ** 0.5 or 1.0
+            vectors.append([round(x / norm, 6) for x in vec])
+        return EmbedResult(
+            vectors=vectors,
+            tokens=sum(max(1, len(t.split())) for t in request.texts),
+            model_ref=request.model_ref,
+            backend=self.name,
+        )
 
     def loaded_models(self) -> list[str]:
         return sorted(self._loaded)

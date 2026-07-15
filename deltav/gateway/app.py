@@ -30,7 +30,7 @@ from ..overlay import (
     strip_tool_calls,
     to_openai_tool_calls,
 )
-from ..overlay.memory import MemoryStore
+from ..overlay.memory import VectorMemory
 from ..overlay.tools import ToolSpec
 from ..router import Catalog, RouteError, SmartRouter
 from ..router.catalog import estimate_vram_mb
@@ -69,8 +69,21 @@ class GatewayDaemon:
         # Overlay: search engine + tool registry shared by tool-calling and agents.
         self.tools = tools or builtin_registry(self.client)
         self.search = SearchEngine(self.client)
-        self.memory = MemoryStore(memory_path)
+        # Memory embeds through the network's own paid embedding jobs and
+        # falls back to BM25 when no embedding node is live.
+        self.memory = VectorMemory(memory_path, embedder=self._embed_texts)
         self.app = self._build_app()
+
+    async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
+        if not self.router.nodes:
+            await self.router.refresh(self.node_urls)
+        try:
+            result = await self.router.route_embed(texts=texts, model="auto")
+        except RouteError:
+            # registry may be stale (nodes marked dead) — one refresh, one retry
+            await self.router.refresh(self.node_urls)
+            result = await self.router.route_embed(texts=texts, model="auto")
+        return result.vectors
 
     def _agent_registry(self, complete, session_id: str | None, max_steps: int) -> ToolRegistry:
         """Per-run registry: built-ins + session memory + parallel sub-agents."""
@@ -78,11 +91,11 @@ class GatewayDaemon:
 
         if session_id:
             async def remember(text: str) -> str:
-                item = self.memory.add(session_id, str(text))
+                item = await self.memory.aadd(session_id, str(text))
                 return f"remembered as {item['id']}"
 
             async def recall(query: str, k: int = 4) -> str:
-                hits = self.memory.search(session_id, str(query), int(k))
+                hits = await self.memory.asearch(session_id, str(query), int(k))
                 if not hits:
                     return "no matching memories"
                 return "\n".join(f"[{h['id']}] {h['text']}" for h in hits)
@@ -201,7 +214,7 @@ class GatewayDaemon:
             memory_used: list[dict] = []
             agent_task = task
             if session_id:
-                memory_used = self.memory.search(session_id, task, k=3)
+                memory_used = await self.memory.asearch(session_id, task, k=3)
                 if memory_used:
                     context = "\n".join(f"- {h['text']}" for h in memory_used)
                     agent_task = f"Relevant memory from earlier sessions:\n{context}\n\nTask: {task}"
@@ -233,10 +246,35 @@ class GatewayDaemon:
         @app.get("/v1/memory")
         async def memory_view(session: str, q: str = "", k: int = 8) -> dict:
             if q:
-                items = self.memory.search(session, q, k)
+                items = await self.memory.asearch(session, q, k)
             else:
                 items = self.memory.session_items(session)[-k:]
-            return {"session": session, "items": items}
+            return {"session": session,
+                    "items": [{key: v for key, v in it.items() if key != "vec"}
+                              for it in items]}
+
+        @app.post("/v1/embeddings")
+        async def embeddings(body: dict) -> dict:
+            raw = body.get("input")
+            texts = [raw] if isinstance(raw, str) else [str(t) for t in (raw or [])]
+            if not texts:
+                raise HTTPException(400, "input required")
+            await self.router.refresh(self.node_urls)
+            try:
+                result = await self.router.route_embed(texts, model=body.get("model", "auto"))
+            except RouteError as exc:
+                raise HTTPException(503, str(exc))
+            return {
+                "object": "list",
+                "model": result.model_ref,
+                "data": [
+                    {"object": "embedding", "index": i, "embedding": vec}
+                    for i, vec in enumerate(result.vectors)
+                ],
+                "usage": {"prompt_tokens": result.tokens, "total_tokens": result.tokens},
+                "deltav": {"node": result.node, "receipt_tx": result.receipt_tx,
+                           "attempts": result.attempts},
+            }
 
         @app.post("/v1/chat/completions")
         async def chat_completions(body: dict):

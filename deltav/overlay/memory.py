@@ -37,7 +37,8 @@ class MemoryStore:
                 except json.JSONDecodeError:
                     continue
 
-    def add(self, session: str, text: str, meta: dict | None = None) -> dict:
+    def add(self, session: str, text: str, meta: dict | None = None,
+            vec: list[float] | None = None) -> dict:
         item = {
             "id": f"mem-{len(self.items) + 1}",
             "session": session,
@@ -45,6 +46,8 @@ class MemoryStore:
             "meta": meta or {},
             "ts": time.time(),
         }
+        if vec is not None:
+            item["vec"] = vec
         self.items.append(item)
         if self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,3 +85,58 @@ class MemoryStore:
                 scored.append({**doc, "score": round(score, 4)})
         scored.sort(key=lambda d: -d["score"])
         return scored[:k]
+
+
+def cosine(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+class VectorMemory(MemoryStore):
+    """MemoryStore + optional network embedder.
+
+    `embedder(texts) -> vectors` is an async callable — on the gateway it
+    routes a PAID embedding job through the network itself. When no
+    embedding node is live (or vectors are missing) everything degrades
+    to BM25, so memory never breaks.
+    """
+
+    def __init__(self, path=None, embedder=None):
+        super().__init__(path)
+        self.embedder = embedder
+
+    async def _embed(self, texts: list[str]) -> list[list[float]] | None:
+        if self.embedder is None:
+            return None
+        try:
+            return await self.embedder(texts)
+        except Exception:
+            return None
+
+    async def aadd(self, session: str, text: str, meta: dict | None = None) -> dict:
+        vecs = await self._embed([text])
+        return self.add(session, text, meta, vec=vecs[0] if vecs else None)
+
+    def vector_search(self, session: str, qvec: list[float], k: int = 4) -> list[dict]:
+        scored = [
+            {**it, "score": round(cosine(qvec, it["vec"]), 4)}
+            for it in self.session_items(session)
+            if it.get("vec")
+        ]
+        scored = [s for s in scored if s["score"] > 0]
+        scored.sort(key=lambda d: -d["score"])
+        return scored[:k]
+
+    async def asearch(self, session: str, query: str, k: int = 4) -> list[dict]:
+        vecs = await self._embed([query])
+        if vecs:
+            hits = self.vector_search(session, vecs[0], k)
+            if hits:
+                return hits
+        return self.search(session, query, k)

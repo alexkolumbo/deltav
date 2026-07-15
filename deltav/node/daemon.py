@@ -25,7 +25,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from ..chain import Blockchain, Mempool, Tx, TxType
 from ..chain.block import Block
 from ..chain.consensus import ConsensusError, expected_proposer
-from ..compute import DeviceInfo, InferRequest, detect_device, make_backend
+from ..compute import DeviceInfo, EmbedRequest, InferRequest, detect_device, make_backend
 from ..config import Genesis
 from ..crypto import KeyPair, canonical_json, sha256_hex
 from .verify import spot_check_verdict
@@ -52,6 +52,12 @@ class NodeConfig:
     # Concurrent inference jobs. 1 is the safe default for a single GPU
     # (llama.cpp contexts are not thread-safe); raise for API relays/mock.
     max_parallel_jobs: int = 1
+    # Asking price in udvt per token; 0 = network default. Announced
+    # on-chain — receipts pay this price, the router prefers cheaper nodes.
+    price_per_token: int = 0
+
+    def effective_price(self, default: int) -> int:
+        return self.price_per_token or default
 
     def public_url(self) -> str:
         return self.endpoint or f"http://{self.host}:{self.port}"
@@ -236,6 +242,7 @@ class NodeDaemon:
                     "stake": acc.stake,
                     "jobs_done": node.jobs_done,
                     "tokens_served": node.tokens_served,
+                    "price_per_token": node.price_per_token,
                     "last_seen": node.last_seen,
                     "active": node.active,
                     "jailed_until": acc.jailed_until,
@@ -270,6 +277,8 @@ class NodeDaemon:
         @app.post("/infer")
         async def infer(body: dict):
             self._validate_infer_body(body)
+            self._check_price(body, int(body.get("max_tokens", 256))
+                              + len(str(body.get("prompt", "")).split()))
             if body.get("stream"):
                 return StreamingResponse(
                     self._infer_stream_events(body),
@@ -278,7 +287,19 @@ class NodeDaemon:
                 )
             return await self._handle_infer(body)
 
+        @app.post("/embed")
+        async def embed(body: dict):
+            return await self._handle_embed(body)
+
         return app
+
+    def _check_price(self, body: dict, expected_tokens: int) -> None:
+        """Refuse jobs whose signed price cap can't cover our asking price —
+        better an honest 402 than a receipt the chain would reject unpaid."""
+        my_price = self.cfg.effective_price(self.chain.genesis.params.price_per_token)
+        if int(body.get("price_limit", 0)) < expected_tokens * my_price:
+            raise HTTPException(
+                402, f"price limit too low: this node asks {my_price} udvt/token")
 
     # ------------------------------------------------------------- serving
     @staticmethod
@@ -311,6 +332,7 @@ class NodeDaemon:
 
         output_hash = sha256_hex(result.text.encode())
         self.jobs[request_hash] = {
+            "type": "chat",
             "prompt": prompt, "model": model_ref, "max_tokens": max_tokens,
             "temperature": temperature, "seed": seed, "output_hash": output_hash,
         }
@@ -332,6 +354,58 @@ class NodeDaemon:
             "text": result.text,
             "tokens_in": result.tokens_in,
             "tokens_out": result.tokens_out,
+            "output_hash": output_hash,
+            "request_hash": request_hash,
+            "receipt_tx": receipt.hash,
+            "node": self.address,
+            "backend": self.backend.name,
+        }
+
+    async def _handle_embed(self, body: dict) -> dict:
+        for key in ("texts", "model", "requester", "requester_pubkey", "requester_sig", "price_limit"):
+            if key not in body:
+                raise HTTPException(400, f"missing field {key!r}")
+        if not self.backend.supports_embeddings:
+            raise HTTPException(501, f"backend {self.backend.name} has no embedding support")
+        texts = [str(t) for t in body["texts"]][:64]
+        if not texts:
+            raise HTTPException(400, "texts must be a non-empty list")
+        model_ref = body["model"]
+        self._check_price(body, sum(len(t.split()) for t in texts) + len(texts))
+
+        request_hash = sha256_hex(canonical_json({"texts": texts, "model": model_ref}))
+        request = EmbedRequest(texts=texts, model_ref=model_ref)
+        self.active_jobs += 1
+        try:
+            async with self._job_sem:
+                result = await asyncio.to_thread(self.backend.embed, request)
+        except Exception as exc:
+            raise HTTPException(500, f"embedding failed: {exc}")
+        finally:
+            self.active_jobs -= 1
+
+        rounded = [[round(x, 4) for x in vec] for vec in result.vectors]
+        output_hash = sha256_hex(canonical_json(rounded))
+        self.jobs[request_hash] = {
+            "type": "embed", "texts": texts, "model": model_ref, "output_hash": output_hash,
+        }
+        receipt = self._make_tx(TxType.INFERENCE_RECEIPT, {
+            "requester": body["requester"],
+            "requester_pubkey": body["requester_pubkey"],
+            "requester_sig": body["requester_sig"],
+            "request_hash": request_hash,
+            "output_hash": output_hash,
+            "model": model_ref,
+            "seed": 0,
+            "tokens_in": result.tokens,
+            "tokens_out": len(texts),
+            "price_limit": int(body["price_limit"]),
+            "deterministic": result.deterministic and self.backend.deterministic,
+        })
+        await self.submit_tx(receipt)
+        return {
+            "vectors": result.vectors,
+            "tokens": result.tokens,
             "output_hash": output_hash,
             "request_hash": request_hash,
             "receipt_tx": receipt.hash,
@@ -445,6 +519,7 @@ class NodeDaemon:
             "endpoint": self.cfg.public_url(),
             "hardware": self.device.to_dict() | {"backend": self.backend.name},
             "models": self.cfg.models,
+            "price_per_token": self.cfg.price_per_token,
         })
         await self.submit_tx(register)
         if self.cfg.stake > 0:
@@ -584,6 +659,27 @@ class NodeDaemon:
             job = resp.json()
         except httpx.HTTPError:
             return None
+
+        if job.get("type") == "embed":
+            if not self.backend.supports_embeddings:
+                return None
+            try:
+                result = await asyncio.to_thread(
+                    self.backend.embed,
+                    EmbedRequest(texts=list(job["texts"]), model_ref=job["model"]),
+                )
+            except Exception:
+                return None
+            rounded = [[round(x, 4) for x in vec] for vec in result.vectors]
+            return spot_check_verdict(
+                receipt_deterministic=receipt.deterministic,
+                checker_deterministic=self.backend.deterministic,
+                receipt_output_hash=receipt.output_hash,
+                recomputed_output_hash=sha256_hex(canonical_json(rounded)),
+                receipt_tokens_out=receipt.tokens_out,
+                recomputed_tokens_out=len(result.vectors),
+            )
+
         request = InferRequest(
             prompt=job["prompt"], model_ref=job["model"],
             max_tokens=int(job["max_tokens"]),
