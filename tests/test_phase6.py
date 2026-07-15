@@ -81,6 +81,18 @@ def test_parse_nvidia_smi_multi_gpu():
     assert parse_nvidia_smi("garbage") is None
 
 
+def test_parse_windows_gpus_picks_discrete_amd():
+    from deltav.compute.detect import parse_windows_gpus
+
+    out = ("AMD Radeon(TM) Graphics|536870912\n"        # iGPU carve-out, skipped
+           "AMD Radeon RX 6600M|8573157376\n")
+    device = parse_windows_gpus(out)
+    assert device.vendor == "amd"
+    assert device.name == "AMD Radeon RX 6600M"
+    assert device.vram_mb == 8176
+    assert parse_windows_gpus("") is None
+
+
 class SlowBackend(MockBackend):
     """Records how many infer() calls overlap."""
     current = 0
