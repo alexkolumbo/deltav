@@ -133,8 +133,9 @@ def register_backend(cls: type[ComputeBackend]) -> type[ComputeBackend]:
 def make_backend(name: str = "auto") -> ComputeBackend:
     """Instantiate a backend by name, or the best available one for "auto"."""
     # Imports here so optional heavy deps never load unless needed.
-    # Order = "auto" preference: local GPU first, API relays after, mock last.
-    from . import llamacpp, groq, asic, mock  # noqa: F401  (registration side effect)
+    # Order = "auto" preference: local GPU first (in-process, then a local
+    # llama-server), API relays after, mock last.
+    from . import llamacpp, llamaserver, groq, asic, mock  # noqa: F401  (registration side effect)
 
     if name != "auto":
         for cls in BACKENDS:
