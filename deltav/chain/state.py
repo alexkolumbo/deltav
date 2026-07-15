@@ -41,6 +41,8 @@ class NodeInfo:
     reputation: float = 0.5
     jobs_done: int = 0
     tokens_served: int = 0
+    # Tokens served in the CURRENT epoch — the pool distribution key.
+    epoch_tokens: int = 0
     registered_at: int = 0
     last_seen: int = 0
     active: bool = True
@@ -76,6 +78,9 @@ class State:
         self.params = params
         self.height = 0
         self.supply = 0
+        # Chain pool: accrues pool_fee_bps of every receipt payment,
+        # distributed per epoch to working nodes + the dev fund.
+        self.pool = 0
         # RANDAO accumulator: mixes every block's randao_reveal; feeds
         # proposer selection so the schedule can't be ground in advance.
         self.randao = ""
@@ -96,6 +101,7 @@ class State:
         return {
             "height": self.height,
             "supply": self.supply,
+            "pool": self.pool,
             "randao": self.randao,
             "accounts": {a: asdict(acc) for a, acc in sorted(self.accounts.items())},
             "nodes": {a: asdict(n) for a, n in sorted(self.nodes.items())},
@@ -258,12 +264,17 @@ class State:
         if requester_acc.balance < price:
             raise StateError("requester cannot afford the job")
         requester_acc.balance -= price
+        # pool_fee_bps of the payment accrues to the chain pool; the node
+        # keeps the rest plus the protocol emission.
+        pool_cut = price * self.params.pool_fee_bps // 10_000
+        self.pool += pool_cut
         node_acc = self.account(tx.sender)
-        node_acc.balance += price + self.params.inference_reward
+        node_acc.balance += price - pool_cut + self.params.inference_reward
         self.supply += self.params.inference_reward
 
         node.jobs_done += 1
         node.tokens_served += tokens_in + tokens_out
+        node.epoch_tokens += tokens_in + tokens_out
         node.last_seen = height
         node.reputation = _clamp01(node.reputation * 0.95 + 0.05)
 
@@ -357,3 +368,32 @@ class State:
         proposer_acc.misses = 0
         proposer_acc.balance += self.params.block_reward + fees
         self.supply += self.params.block_reward
+
+        if self.params.epoch_blocks > 0 and height % self.params.epoch_blocks == 0:
+            self._distribute_pool()
+
+    def _distribute_pool(self) -> None:
+        """Epoch settlement: dev fund gets its share, working nodes split
+        the rest pro-rata to tokens served this epoch. Integer dust stays
+        in the pool; epoch counters always reset."""
+        total = self.pool
+        if total > 0:
+            distributed = 0
+            dev_cut = (total * self.params.dev_share_bps // 10_000
+                       if self.params.dev_fund else 0)
+            if dev_cut:
+                self.account(self.params.dev_fund).balance += dev_cut
+                distributed += dev_cut
+            remainder = total - dev_cut
+            worked = [(addr, node.epoch_tokens)
+                      for addr, node in sorted(self.nodes.items())
+                      if node.epoch_tokens > 0]
+            total_tokens = sum(t for _, t in worked)
+            if total_tokens > 0:
+                for addr, tokens in worked:
+                    share = remainder * tokens // total_tokens
+                    self.account(addr).balance += share
+                    distributed += share
+            self.pool -= distributed
+        for node in self.nodes.values():
+            node.epoch_tokens = 0

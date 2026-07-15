@@ -36,9 +36,11 @@ def test_receipt_pays_node_asking_price(genesis, alice, bob):
     balance_before = state.account(bob.address).balance
     state.apply_tx(make_receipt_tx(bob, alice, state, tokens_in=10, tokens_out=20), 2)
     paid = 30 * 25  # node's price, not the network default of 10
+    pool_cut = paid * state.params.pool_fee_bps // 10_000
     receipt = next(iter(state.receipts.values()))
     assert receipt.price_paid == paid
-    assert state.account(bob.address).balance == balance_before + paid + state.params.inference_reward
+    assert state.account(bob.address).balance == \
+        balance_before + paid - pool_cut + state.params.inference_reward
 
 
 def test_overpriced_receipt_rejected_by_limit(genesis, alice, bob):

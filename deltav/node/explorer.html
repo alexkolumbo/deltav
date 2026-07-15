@@ -38,6 +38,7 @@
 <div class="cards">
   <div class="card"><div class="k">Height</div><div class="v" id="c-height">–</div></div>
   <div class="card"><div class="k">Supply</div><div class="v" id="c-supply">–</div></div>
+  <div class="card"><div class="k">Pool</div><div class="v" id="c-pool">–</div></div>
   <div class="card"><div class="k">Nodes</div><div class="v" id="c-nodes">–</div></div>
   <div class="card"><div class="k">Validators</div><div class="v" id="c-validators">–</div></div>
   <div class="card"><div class="k">Receipts</div><div class="v" id="c-receipts">–</div></div>
@@ -88,6 +89,7 @@ async function refresh() {
     $('meta').textContent = health.chain_id + ' · served by ' + health.address + ' · head ' + short(head.hash);
     $('c-height').textContent = stats.height;
     $('c-supply').textContent = dvt(stats.supply);
+    $('c-pool').textContent = dvt(stats.pool || 0);
     $('c-nodes').textContent = stats.nodes;
     $('c-validators').textContent = stats.validators;
     $('c-receipts').textContent = stats.receipts;

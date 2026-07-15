@@ -36,6 +36,14 @@ class ChainParams:
     jail_blocks: int = 50
     # Unstaked funds stay slashable for this many blocks before release.
     unbonding_blocks: int = 20
+    # Tokenomics: this share of every receipt payment (basis points)
+    # accrues to the chain pool instead of the serving node directly.
+    pool_fee_bps: int = 1000
+    # Every epoch the pool distributes: dev_share_bps to the dev fund,
+    # the rest to nodes pro-rata to tokens served during the epoch.
+    dev_fund: str = ""
+    dev_share_bps: int = 3000
+    epoch_blocks: int = 600
 
 
 @dataclass

@@ -99,11 +99,15 @@ def test_receipt_pays_node(genesis, alice, bob):
     tx = make_receipt_tx(bob, alice, state, tokens_in=10, tokens_out=20)
     state.apply_tx(tx, 2)
     price = 30 * state.params.price_per_token
+    pool_cut = price * state.params.pool_fee_bps // 10_000
     assert state.account(alice.address).balance == 100_000 * DVT - price
-    assert state.account(bob.address).balance == 100_000 * DVT + price + state.params.inference_reward
+    assert state.account(bob.address).balance == \
+        100_000 * DVT + price - pool_cut + state.params.inference_reward
+    assert state.pool == pool_cut
     assert len(state.receipts) == 1
     node = state.nodes[bob.address]
     assert node.jobs_done == 1 and node.tokens_served == 30
+    assert node.epoch_tokens == 30
 
 
 def test_receipt_needs_requester_authorization(genesis, alice, bob, carol):

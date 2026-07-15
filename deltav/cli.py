@@ -41,7 +41,7 @@ def _cmd_genesis(args: argparse.Namespace) -> int:
         return out
 
     genesis = Genesis(
-        params=ChainParams(chain_id=args.chain_id),
+        params=ChainParams(chain_id=args.chain_id, dev_fund=args.dev_fund),
         alloc=parse_pairs(args.alloc),
         stakes=parse_pairs(args.stake),
     )
@@ -229,6 +229,23 @@ def _cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_price(args: argparse.Namespace) -> int:
+    from .economics import price_report
+
+    r = price_report(watts=args.watts, tokens_per_sec=args.tps,
+                     electricity_usd_kwh=args.kwh_usd, margin=args.margin,
+                     usd_per_dvt=args.usd_per_dvt)
+    print(f"node profile : {r.watts:.0f} W @ {r.tokens_per_sec:.0f} tok/s")
+    print(f"energy       : {r.kwh_per_million} kWh per 1M tokens")
+    print(f"electricity  : ${r.electricity_usd_kwh}/kWh (world avg default)")
+    print(f"cost         : ${r.cost_usd_per_million} per 1M tokens")
+    print(f"+{r.margin:.0%} margin  : ${r.price_usd_per_million} per 1M tokens")
+    print(f"peg          : 1 DVT = ${r.usd_per_dvt}")
+    print(f"recommended  : --price {r.suggested_price_udvt}   (udvt per token; "
+          f"{r.suggested_price_udvt} DVT per 1M)")
+    return 0
+
+
 def _cmd_plan(args: argparse.Namespace) -> int:
     from .compute import detect_device
     from .router.planner import launch_hint, plan
@@ -343,6 +360,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--stake", action="append", default=[],
                        metavar="ADDR=DVT", help="genesis validator stake")
     p_gen.add_argument("--chain-id", default="deltav-local-1")
+    p_gen.add_argument("--dev-fund", default="",
+                       help="address receiving the dev share of the chain pool")
     p_gen.add_argument("-o", "--output", default="genesis.json")
     p_gen.set_defaults(func=_cmd_genesis)
 
@@ -416,6 +435,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_sim.add_argument("--duration", type=float, default=25.0)
     p_sim.add_argument("--base-port", type=int, default=9100)
     p_sim.set_defaults(func=_cmd_sim)
+
+    p_price = sub.add_parser(
+        "price", help="cost-anchored pricing: electricity + 50% service margin")
+    p_price.add_argument("--watts", type=float, default=150.0,
+                         help="system power draw under inference")
+    p_price.add_argument("--tps", type=float, default=30.0, help="tokens per second")
+    p_price.add_argument("--kwh-usd", type=float, default=0.155,
+                         help="your electricity price, USD/kWh")
+    p_price.add_argument("--margin", type=float, default=0.5)
+    p_price.add_argument("--usd-per-dvt", type=float, default=0.032,
+                         help="DVT reference peg")
+    p_price.set_defaults(func=_cmd_price)
 
     p_plan = sub.add_parser(
         "plan", help="hardware-aware model planner: what should this machine run?")

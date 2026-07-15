@@ -207,6 +207,7 @@ class NodeDaemon:
                 "chain_id": self.chain.genesis.params.chain_id,
                 "height": state.height,
                 "supply": state.supply,
+                "pool": state.pool,
                 "nodes": len(state.nodes),
                 "validators": len(state.validators()),
                 "receipts": len(state.receipts),
