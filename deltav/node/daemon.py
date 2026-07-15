@@ -498,7 +498,7 @@ class NodeDaemon:
     async def start(self) -> None:
         self._running = True
         if self.cfg.auto_register:
-            self._tasks.append(asyncio.create_task(self._register_self()))
+            self._tasks.append(asyncio.create_task(self._register_loop()))
         self._tasks.append(asyncio.create_task(self._producer_loop()))
         self._tasks.append(asyncio.create_task(self._sync_loop()))
         self._tasks.append(asyncio.create_task(self._discovery_loop()))
@@ -514,17 +514,50 @@ class NodeDaemon:
         if self._owns_client:
             await self.client.aclose()
 
-    async def _register_self(self) -> None:
-        register = self._make_tx(TxType.REGISTER_NODE, {
-            "endpoint": self.cfg.public_url(),
-            "hardware": self.device.to_dict() | {"backend": self.backend.name},
-            "models": self.cfg.models,
-            "price_per_token": self.cfg.price_per_token,
-        })
-        await self.submit_tx(register)
-        if self.cfg.stake > 0:
-            stake = self._make_tx(TxType.STAKE, {"amount": self.cfg.stake})
-            await self.submit_tx(stake)
+    async def _register_loop(self) -> None:
+        """Keep our on-chain registration true to reality.
+
+        A one-shot registration at startup is wrong on rejoin: the local
+        chain is still at genesis, so the tx gets a stale nonce and is
+        silently dropped once the node syncs. Instead, periodically compare
+        the on-chain record with our actual config/hardware and (re)submit
+        whenever they diverge — also self-heals endpoint/model changes.
+        """
+        params = self.chain.genesis.params
+        while self._running:
+            await asyncio.sleep(params.block_time * 2)
+            state = self.chain.state
+            info = state.nodes.get(self.address)
+            hardware = self.device.to_dict() | {"backend": self.backend.name}
+            registered = (
+                info is not None
+                and info.endpoint == self.cfg.public_url()
+                and info.hardware == hardware
+                and (not self.cfg.models or info.models == self.cfg.models)
+                and info.price_per_token == self.cfg.price_per_token
+            )
+            pending = any(
+                tx.sender == self.address and tx.type == TxType.REGISTER_NODE.value
+                for tx in self.mempool.txs.values()
+            )
+            if not registered and not pending:
+                register = self._make_tx(TxType.REGISTER_NODE, {
+                    "endpoint": self.cfg.public_url(),
+                    "hardware": hardware,
+                    "models": self.cfg.models,
+                    "price_per_token": self.cfg.price_per_token,
+                })
+                await self.submit_tx(register)
+
+            account = state.account(self.address)
+            if (self.cfg.stake > 0 and account.stake < self.cfg.stake
+                    and account.balance >= self.cfg.stake
+                    and not any(tx.sender == self.address and tx.type == TxType.STAKE.value
+                                for tx in self.mempool.txs.values())):
+                stake = self._make_tx(TxType.STAKE, {"amount": self.cfg.stake - account.stake})
+                await self.submit_tx(stake)
+
+            await asyncio.sleep(params.block_time * 8)
 
     async def _producer_loop(self) -> None:
         """Slot-based production: slot 0's proposer goes first; if the head

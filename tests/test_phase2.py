@@ -287,9 +287,9 @@ async def test_peer_discovery_via_exchange(params):
     for d in daemons:
         await d.start()
     try:
-        deadline = asyncio.get_event_loop().time() + 8.0
+        deadline = asyncio.get_event_loop().time() + 12.0
         while asyncio.get_event_loop().time() < deadline:
-            if urls[1] in daemons[2].peers:
+            if urls[1] in daemons[2].peers and urls[2] in daemons[1].peers:
                 break
             await asyncio.sleep(0.05)
         assert urls[1] in daemons[2].peers, "C never discovered B"
