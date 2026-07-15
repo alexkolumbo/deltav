@@ -223,6 +223,44 @@ def _cmd_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_search(args: argparse.Namespace) -> int:
+    import httpx
+
+    data = httpx.get(f"{args.gateway}/v1/search",
+                     params={"q": args.query, "max_results": args.max_results},
+                     timeout=30.0).json()
+    for i, r in enumerate(data["results"], 1):
+        print(f"{i}. {r['title']}\n   {r['url']}\n   {r['snippet']}")
+    if not data["results"]:
+        print("no results")
+    return 0
+
+
+def _cmd_agent(args: argparse.Namespace) -> int:
+    import httpx
+
+    resp = httpx.post(f"{args.gateway}/v1/agents/run", json={
+        "task": args.task,
+        "model": args.model,
+        "max_steps": args.max_steps,
+    }, timeout=600.0)
+    if resp.status_code != 200:
+        print(f"error {resp.status_code}: {resp.text}", file=sys.stderr)
+        return 1
+    data = resp.json()
+    for i, step in enumerate(data["steps"], 1):
+        print(f"[step {i}] {step['tool']}({json.dumps(step['arguments'], ensure_ascii=False)})",
+              file=sys.stderr)
+        print(f"          -> {step['result'][:200]}", file=sys.stderr)
+        if step.get("receipt_tx"):
+            print(f"          receipt={step['receipt_tx'][:16]} node={step['node'][:16]}",
+                  file=sys.stderr)
+    print(data["answer"])
+    if not data["finished"]:
+        print("(step limit reached)", file=sys.stderr)
+    return 0
+
+
 def _cmd_chat(args: argparse.Namespace) -> int:
     import httpx
 
@@ -324,6 +362,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_sim.add_argument("--duration", type=float, default=25.0)
     p_sim.add_argument("--base-port", type=int, default=9100)
     p_sim.set_defaults(func=_cmd_sim)
+
+    p_search = sub.add_parser("search", help="internet search through the gateway")
+    p_search.add_argument("query")
+    p_search.add_argument("--gateway", default="http://127.0.0.1:9000")
+    p_search.add_argument("--max-results", type=int, default=5)
+    p_search.set_defaults(func=_cmd_search)
+
+    p_agent = sub.add_parser("agent", help="run a tool-using agent on the network")
+    p_agent.add_argument("task")
+    p_agent.add_argument("--gateway", default="http://127.0.0.1:9000")
+    p_agent.add_argument("--model", default="auto")
+    p_agent.add_argument("--max-steps", type=int, default=6)
+    p_agent.set_defaults(func=_cmd_agent)
 
     p_chat = sub.add_parser("chat", help="one-shot chat through the network")
     p_chat.add_argument("prompt")

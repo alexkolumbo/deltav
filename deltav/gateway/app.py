@@ -18,13 +18,26 @@ from fastapi.responses import StreamingResponse
 
 from ..config import ChainParams
 from ..crypto import KeyPair
+from ..overlay import (
+    Agent,
+    SearchEngine,
+    ToolRegistry,
+    build_tool_system_prompt,
+    builtin_registry,
+    parse_tool_calls,
+    render_conversation,
+    strip_tool_calls,
+    to_openai_tool_calls,
+)
 from ..router import Catalog, RouteError, SmartRouter
 from ..router.catalog import estimate_vram_mb
 
 
-def render_prompt(messages: list[dict]) -> str:
-    lines = [f"{m.get('role', 'user')}: {m.get('content', '')}" for m in messages]
-    return "\n".join(lines) + "\nassistant:"
+def render_prompt(messages: list[dict], tools: list[dict] | None = None) -> str:
+    if tools:
+        system = {"role": "system", "content": build_tool_system_prompt(tools)}
+        return render_conversation([system, *messages])
+    return render_conversation(messages)
 
 
 class GatewayDaemon:
@@ -35,6 +48,7 @@ class GatewayDaemon:
         params: ChainParams | None = None,
         catalog: Catalog | None = None,
         client: httpx.AsyncClient | None = None,
+        tools: ToolRegistry | None = None,
     ):
         self.keypair = keypair
         self.node_urls = node_urls
@@ -48,6 +62,9 @@ class GatewayDaemon:
             client=self.client,
             price_per_token=self.params.price_per_token,
         )
+        # Overlay: search engine + tool registry shared by tool-calling and agents.
+        self.tools = tools or builtin_registry(self.client)
+        self.search = SearchEngine(self.client)
         self.app = self._build_app()
 
     async def close(self) -> None:
@@ -94,12 +111,58 @@ class GatewayDaemon:
                 })
             return {"object": "list", "data": data}
 
+        @app.get("/v1/search")
+        async def search(q: str, max_results: int = 5) -> dict:
+            """The network's internet search surface (also a built-in tool)."""
+            results = await self.search.search(q, max_results)
+            return {"query": q, "results": results}
+
+        @app.post("/v1/agents/run")
+        async def agents_run(body: dict) -> dict:
+            task = body.get("task", "").strip()
+            if not task:
+                raise HTTPException(400, "task required")
+            model = body.get("model", "auto")
+            max_steps = min(int(body.get("max_steps", 6)), 16)
+            await self.router.refresh(self.node_urls)
+
+            async def complete(prompt: str) -> tuple[str, dict]:
+                result = await self.router.route(
+                    prompt=prompt, model=model,
+                    max_tokens=int(body.get("max_tokens", 512)),
+                    temperature=float(body.get("temperature") or 0.0),
+                    seed=int(body.get("seed") or 0),
+                )
+                return result.text, {"node": result.node, "receipt_tx": result.receipt_tx}
+
+            agent = Agent(complete, self.tools, max_steps=max_steps)
+            try:
+                result = await agent.run(task)
+            except RouteError as exc:
+                raise HTTPException(503, str(exc))
+            return {
+                "task": task,
+                "answer": result.answer,
+                "finished": result.finished,
+                "model_calls": result.model_calls,
+                "steps": [
+                    {
+                        "tool": s.tool, "arguments": s.arguments,
+                        "result": s.result[:2000],
+                        "node": s.node, "receipt_tx": s.receipt_tx,
+                    }
+                    for s in result.steps
+                ],
+                "tools_available": self.tools.names(),
+            }
+
         @app.post("/v1/chat/completions")
         async def chat_completions(body: dict):
             messages = body.get("messages") or []
             if not messages:
                 raise HTTPException(400, "messages required")
-            prompt = render_prompt(messages)
+            tools = body.get("tools") or None
+            prompt = render_prompt(messages, tools)
             await self.router.refresh(self.node_urls)
             try:
                 result = await self.router.route(
@@ -126,9 +189,24 @@ class GatewayDaemon:
                 "attempts": result.attempts,
             }
 
+            # OpenAI tools dialect: a <tool_call> in the completion becomes
+            # a tool_calls message; the client executes and calls us back.
+            tool_calls = to_openai_tool_calls(parse_tool_calls(result.text)) if tools else []
+            if tool_calls:
+                message = {
+                    "role": "assistant",
+                    "content": strip_tool_calls(result.text) or None,
+                    "tool_calls": tool_calls,
+                }
+                finish = "tool_calls"
+            else:
+                message = {"role": "assistant", "content": result.text}
+                finish = "stop"
+
             if body.get("stream"):
                 return StreamingResponse(
-                    _sse_chunks(completion_id, created, result.model_ref, result.text, usage),
+                    _sse_chunks(completion_id, created, result.model_ref,
+                                message, finish, usage),
                     media_type="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
                 )
@@ -139,8 +217,8 @@ class GatewayDaemon:
                 "model": result.model_ref,
                 "choices": [{
                     "index": 0,
-                    "message": {"role": "assistant", "content": result.text},
-                    "finish_reason": "stop",
+                    "message": message,
+                    "finish_reason": finish,
                 }],
                 "usage": usage,
                 "deltav": meta,
@@ -149,33 +227,36 @@ class GatewayDaemon:
         return app
 
 
-async def _sse_chunks(completion_id: str, created: int, model: str, text: str, usage: dict):
+async def _sse_chunks(completion_id: str, created: int, model: str,
+                      message: dict, finish: str, usage: dict):
     """OpenAI-compatible SSE stream.
 
     The node protocol returns the full completion (it has to be hashed
     into the on-chain receipt), so the gateway re-chunks it for clients
     that require streaming. True token-level passthrough is a later phase.
     """
-    def chunk(delta: dict, finish: str | None = None) -> str:
+    def chunk(delta: dict, finish_reason: str | None = None, extra: dict | None = None) -> str:
         payload = {
             "id": completion_id,
             "object": "chat.completion.chunk",
             "created": created,
             "model": model,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
+        if extra:
+            payload.update(extra)
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     yield chunk({"role": "assistant", "content": ""})
-    for piece in re.findall(r"\S+\s*", text) or [text]:
-        yield chunk({"content": piece})
-    final = {
-        "id": completion_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-        "usage": usage,
-    }
-    yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
+    if message.get("tool_calls"):
+        deltas = [
+            {**c, "index": i, "function": dict(c["function"])}
+            for i, c in enumerate(message["tool_calls"])
+        ]
+        yield chunk({"tool_calls": deltas})
+    else:
+        text = message.get("content") or ""
+        for piece in re.findall(r"\S+\s*", text) or [text]:
+            yield chunk({"content": piece})
+    yield chunk({}, finish, extra={"usage": usage})
     yield "data: [DONE]\n\n"

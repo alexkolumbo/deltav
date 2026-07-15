@@ -7,8 +7,14 @@ the whole trust pipeline can be exercised without a GPU.
 from __future__ import annotations
 
 import hashlib
+import re
 
 from .base import ComputeBackend, InferRequest, InferResult, register_backend
+
+# Scripted-reply marker: a prompt containing [[reply]]...[[/reply]] gets that
+# text back verbatim (still deterministic). Lets tests and demos drive
+# tool-calling/agent flows through the full network without a real LLM.
+_REPLY_RE = re.compile(r"\[\[reply\]\](.*?)\[\[/reply\]\]", re.S)
 
 _WORDS = [
     "delta", "vector", "orbit", "thrust", "ion", "burn", "apogee", "node",
@@ -34,6 +40,19 @@ class MockBackend(ComputeBackend):
 
     def infer(self, request: InferRequest) -> InferResult:
         self.load(request.model_ref)
+        scripted = _REPLY_RE.findall(request.prompt)
+        if scripted:
+            # the N-th model call in a growing agent prompt uses the N-th script
+            n_turns = request.prompt.count("tool (")
+            text = scripted[min(n_turns, len(scripted) - 1)].strip()
+            return InferResult(
+                text=text,
+                tokens_in=max(1, len(request.prompt.split())),
+                tokens_out=max(1, len(text.split())),
+                seed=request.seed,
+                model_ref=request.model_ref,
+                backend=self.name,
+            )
         seed_material = f"{request.model_ref}|{request.prompt}|{request.max_tokens}|{request.seed}"
         digest = hashlib.sha256(seed_material.encode()).digest()
         n_out = min(request.max_tokens, 24)
