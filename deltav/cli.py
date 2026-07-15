@@ -407,6 +407,109 @@ def _cmd_tgbot(args: argparse.Namespace) -> int:
     return tg_main()
 
 
+def _cmd_connect(args: argparse.Namespace) -> int:
+    from .client import DeltaVClient, Profile, load_profile, save_profile
+
+    profile = load_profile()
+    if args.url:
+        profile.base_urls = [u.strip() for u in args.url.split(",") if u.strip()]
+    if args.key:
+        profile.api_key = args.key
+    if args.model:
+        profile.model = args.model
+    path = save_profile(profile)
+    print(f"сохранено в {path}")
+    print(f"  base URLs : {', '.join(profile.base_urls)}")
+    print(f"  api key   : {profile.api_key[:12]}{'…' if len(profile.api_key) > 12 else ''}")
+    print(f"  model     : {profile.model}")
+    try:
+        client = DeltaVClient.from_profile(profile)
+        h = client.health()
+        models = [m["id"].split("::")[0].split("/")[-1]
+                  for m in client.models() if m["deltav"]["served_by"]]
+        print(f"  ✓ подключено: шлюз {h['gateway'][:14]}…, моделей на сети: {len(models)}")
+        if models:
+            print(f"    {', '.join(sorted(set(models)))}")
+    except Exception as exc:
+        print(f"  ! не удалось проверить связь: {exc}", file=sys.stderr)
+    return 0
+
+
+def _cmd_repl(args: argparse.Namespace) -> int:
+    from .client import DeltaVClient, load_profile
+
+    profile = load_profile()
+    urls = [args.gateway] if args.gateway else profile.base_urls
+    client = DeltaVClient(base_urls=urls, api_key=args.key or profile.api_key,
+                          model=args.model or profile.model)
+    messages: list[dict] = []
+    print(f"ΔV REPL — модель {client.model}. /help для команд, /exit для выхода.")
+    while True:
+        try:
+            text = input("\nвы: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if not text:
+            continue
+        if text.startswith("/"):
+            cmd, _, arg = text.partition(" ")
+            if cmd in ("/exit", "/quit"):
+                break
+            if cmd == "/reset":
+                messages = []; print("диалог очищен"); continue
+            if cmd == "/model":
+                client.model = arg.strip() or client.model; print(f"модель: {client.model}"); continue
+            if cmd == "/models":
+                for m in client.models():
+                    if m["deltav"]["served_by"]:
+                        print(" ", m["id"].split("::")[0])
+                continue
+            if cmd == "/agent":
+                d = client.agent(arg.strip(), session_id="repl")
+                for s in d.get("steps", []):
+                    print(f"  🛠 {s['tool']}({s['arguments']})")
+                print("ΔV:", d.get("answer", "")); continue
+            if cmd == "/swarm":
+                d = client.swarm(arg.strip(), mode="vote")
+                for w in d["workers"]:
+                    print(f"  [{w.get('model')}] {w.get('answer', w.get('error',''))[:80]}")
+                if d.get("answer"):
+                    print("ΔV (синтез):", d["answer"])
+                continue
+            print("команды: /model <ref> /models /agent <task> /swarm <task> /reset /exit")
+            continue
+        messages.append({"role": "user", "content": text})
+        print("ΔV: ", end="", flush=True)
+        acc = ""
+        try:
+            for chunk in client.chat_stream(messages, max_tokens=args.max_tokens):
+                delta = (chunk.get("choices") or [{}])[0].get("delta", {}).get("content")
+                if delta:
+                    acc += delta; print(delta, end="", flush=True)
+            print()
+        except Exception as exc:
+            print(f"\n! {exc}"); messages.pop(); continue
+        messages.append({"role": "assistant", "content": acc})
+    return 0
+
+
+def _cmd_swarm(args: argparse.Namespace) -> int:
+    from .client import DeltaVClient, load_profile
+
+    profile = load_profile()
+    urls = [args.gateway] if args.gateway else profile.base_urls
+    client = DeltaVClient(base_urls=urls, api_key=args.key or profile.api_key)
+    d = client.swarm(args.task, n=args.n, mode=args.mode, max_tokens=args.max_tokens)
+    for w in d["workers"]:
+        head = w.get("answer", w.get("error", ""))
+        print(f"[{w.get('model')}] node={str(w.get('node',''))[:12]}")
+        print(f"  {head[:300].strip()}")
+    if d.get("answer"):
+        print(f"\n=== синтез ({args.mode}) ===\n{d['answer'].strip()}")
+    return 0
+
+
 def _cmd_chat(args: argparse.Namespace) -> int:
     import httpx
 
@@ -593,6 +696,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_tg.add_argument("--gateway", default="http://127.0.0.1:9000")
     p_tg.add_argument("--allow", default="", help="comma-separated Telegram user ids")
     p_tg.set_defaults(func=_cmd_tgbot)
+
+    p_conn = sub.add_parser("connect", help="save how to reach the network (base URL + key)")
+    p_conn.add_argument("--url", default="", help="gateway base URL(s), comma-separated for failover")
+    p_conn.add_argument("--key", default="", help="API key (dvk_... or any)")
+    p_conn.add_argument("--model", default="", help="default model (auto)")
+    p_conn.set_defaults(func=_cmd_connect)
+
+    p_repl = sub.add_parser("repl", help="interactive multi-turn chat")
+    p_repl.add_argument("--gateway", default="", help="override saved base URL")
+    p_repl.add_argument("--key", default="")
+    p_repl.add_argument("--model", default="")
+    p_repl.add_argument("--max-tokens", type=int, default=800)
+    p_repl.set_defaults(func=_cmd_repl)
+
+    p_swarm = sub.add_parser("swarm", help="fan a task across several models/nodes in parallel")
+    p_swarm.add_argument("task")
+    p_swarm.add_argument("--gateway", default="")
+    p_swarm.add_argument("--key", default="")
+    p_swarm.add_argument("-n", type=int, default=3, help="number of models")
+    p_swarm.add_argument("--mode", default="vote", choices=["fanout", "vote", "map"])
+    p_swarm.add_argument("--max-tokens", type=int, default=400)
+    p_swarm.set_defaults(func=_cmd_swarm)
 
     p_chat = sub.add_parser("chat", help="one-shot chat through the network")
     p_chat.add_argument("prompt")

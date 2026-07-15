@@ -19,6 +19,12 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
+from .anthropic import (
+    anthropic_text_stream,
+    messages_to_prompt,
+    to_anthropic_message,
+    to_anthropic_tool_stream,
+)
 from .keys import KEY_PREFIX, KeyRecord, KeyStore
 
 from ..config import ChainParams
@@ -124,6 +130,24 @@ class GatewayDaemon:
                 402,
                 f"insufficient DVT: balance {balance} udvt, need ~{needed}; "
                 f"top up {record.address}")
+
+    def _distinct_models(self, n: int) -> list[str]:
+        """Up to n distinct chat models currently served by live nodes,
+        best-quality first — the basis for spreading a swarm across nodes."""
+        served: set[str] = set()
+        for node in self.router.nodes:
+            if node.alive and node.active:
+                served.update(node.models)
+        specs = sorted(
+            (s for s in self.catalog.specs if s.kind == "chat" and s.ref in served),
+            key=lambda s: -s.quality)
+        picked = [s.ref for s in specs]
+        # include announced models we don't have in the catalog (skip embeddings)
+        for ref in sorted(served):
+            spec = self.catalog.by_ref(ref)
+            if ref not in picked and (spec is None or spec.kind == "chat"):
+                picked.append(ref)
+        return picked[:n]
 
     async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not self.router.nodes:
@@ -354,6 +378,68 @@ class GatewayDaemon:
                 "tools_available": registry.names(),
             }
 
+        @app.post("/v1/swarm")
+        async def swarm(body: dict, request: Request) -> dict:
+            """Fan a task across several distinct models in parallel — each
+            lands on whichever node serves it, so the work spreads across
+            the network. Modes: fanout (same task, diverse answers),
+            map (one task per worker), vote (same task + synthesized pick)."""
+            payer, record = await self._requester_from(request)
+            task = (body.get("task") or "").strip()
+            tasks = body.get("tasks") or ([task] if task else [])
+            if not tasks:
+                raise HTTPException(400, "task or tasks required")
+            mode = body.get("mode", "fanout")
+            max_tokens = int(body.get("max_tokens", 512))
+            await self.router.refresh(self.node_urls)
+
+            models = body.get("models") or self._distinct_models(int(body.get("n", 3)))
+            if not models:
+                raise HTTPException(503, "no live models to swarm across")
+            await self._precheck_funds(record, " ".join(tasks), max_tokens * (len(models) + 1))
+
+            # Build the (worker -> task) plan.
+            if mode == "map":
+                plan_items = [(models[i % len(models)], t) for i, t in enumerate(tasks)]
+            else:  # fanout / vote: same task to each distinct model
+                plan_items = [(m, tasks[0]) for m in models]
+
+            async def one(model: str, t: str) -> dict:
+                try:
+                    r = await self.router.route(
+                        prompt=f"user: {t}\nassistant:", model=model,
+                        max_tokens=max_tokens, requester=payer)
+                    used = r.tokens_in + r.tokens_out
+                    if record is not None:
+                        self.keys.record_usage(record, used, used * self.params.price_per_token)
+                    return {"model": model.split("::")[0], "node": r.node,
+                            "answer": r.text, "receipt_tx": r.receipt_tx}
+                except RouteError as exc:
+                    return {"model": model.split("::")[0], "error": str(exc)}
+
+            workers = await asyncio.gather(*(one(m, t) for m, t in plan_items))
+            answers = [w for w in workers if "answer" in w]
+
+            synthesized = None
+            if mode == "vote" and answers:
+                joined = "\n\n".join(f"[{i+1}] {w['answer']}" for i, w in enumerate(answers))
+                syn_prompt = (f"user: {tasks[0]}\n\n"
+                              f"Independent answers from {len(answers)} models:\n{joined}\n\n"
+                              "Synthesize the single best, correct answer.\nassistant:")
+                try:
+                    r = await self.router.route(prompt=syn_prompt, model="auto",
+                                                max_tokens=max_tokens, requester=payer)
+                    synthesized = r.text
+                    if record is not None:
+                        used = r.tokens_in + r.tokens_out
+                        self.keys.record_usage(record, used, used * self.params.price_per_token)
+                except RouteError:
+                    pass
+
+            return {"mode": mode, "workers": workers,
+                    "models_used": [m for m, _ in plan_items],
+                    "answer": synthesized}
+
         @app.get("/v1/memory")
         async def memory_view(session: str, q: str = "", k: int = 8) -> dict:
             if q:
@@ -392,6 +478,70 @@ class GatewayDaemon:
                 "deltav": {"node": result.node, "receipt_tx": result.receipt_tx,
                            "attempts": result.attempts},
             }
+
+        @app.post("/v1/messages")
+        async def anthropic_messages(body: dict, request: Request):
+            """Anthropic Messages API — Claude-native agents connect directly."""
+            payer, record = await self._requester_from(request)
+            messages = body.get("messages") or []
+            if not messages:
+                raise HTTPException(400, "messages required")
+            tools = body.get("tools") or None
+            prompt = messages_to_prompt(body.get("system", ""), messages, tools)
+            max_tokens = int(body.get("max_tokens", 1024))
+            await self.router.refresh(self.node_urls)
+            await self._precheck_funds(record, prompt, max_tokens)
+
+            if body.get("stream") and not tools:
+                try:
+                    spec = self.router.resolve_model(body.get("model", "auto"))
+                    upstream = self.router.route_stream(
+                        prompt=prompt, model=spec.ref, max_tokens=max_tokens,
+                        temperature=float(body.get("temperature") or 0.0),
+                        requester=payer)
+                    first = await upstream.__anext__()
+                except (RouteError, StopAsyncIteration) as exc:
+                    raise HTTPException(503, str(exc))
+
+                holder: dict = {}
+
+                async def pieces():
+                    kind, value = first
+                    if kind == "token" and value:
+                        yield value
+                    async for k, v in upstream:
+                        if k == "token" and v:
+                            yield v
+                        elif k == "final":
+                            total = v.tokens_in + v.tokens_out
+                            holder.update(tokens_in=v.tokens_in, tokens_out=v.tokens_out,
+                                          meta={"node": v.node, "receipt_tx": v.receipt_tx})
+                            if record is not None:
+                                self.keys.record_usage(record, total,
+                                                       total * self.params.price_per_token)
+
+                return StreamingResponse(
+                    anthropic_text_stream(spec.ref, pieces(), holder),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+            try:
+                result = await self.router.route(
+                    prompt=prompt, model=body.get("model", "auto"), max_tokens=max_tokens,
+                    temperature=float(body.get("temperature") or 0.0), requester=payer)
+            except RouteError as exc:
+                raise HTTPException(503, str(exc))
+            total = result.tokens_in + result.tokens_out
+            if record is not None:
+                self.keys.record_usage(record, total, total * self.params.price_per_token)
+            msg = to_anthropic_message(
+                result.text, result.model_ref, result.tokens_in, result.tokens_out,
+                {"node": result.node, "receipt_tx": result.receipt_tx}, bool(tools))
+            if body.get("stream"):
+                return StreamingResponse(
+                    to_anthropic_tool_stream(msg), media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache"})
+            return msg
 
         @app.post("/v1/chat/completions")
         async def chat_completions(body: dict, request: Request):
