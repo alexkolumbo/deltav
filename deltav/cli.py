@@ -307,6 +307,12 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     return asyncio.run(run())
 
 
+def _cmd_setup(args: argparse.Namespace) -> int:
+    from .setup import run_setup
+
+    return run_setup(home=args.home, seed=args.seed, auto_start=not args.no_start)
+
+
 def _cmd_price(args: argparse.Namespace) -> int:
     from .economics import price_report
 
@@ -536,6 +542,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument("--wallet", default="",
                           help="wallet file: audits its address AND checks signatures")
     p_verify.set_defaults(func=_cmd_verify)
+
+    p_setup = sub.add_parser(
+        "setup", help="friendly wizard: bare machine -> live node, step by step")
+    p_setup.add_argument("--home", default="", help="install directory (default ~/deltav-node)")
+    p_setup.add_argument("--seed", default="", help="a live node URL to join")
+    p_setup.add_argument("--no-start", action="store_true",
+                         help="prepare everything but don't launch (writes a start script)")
+    p_setup.set_defaults(func=_cmd_setup)
 
     p_price = sub.add_parser(
         "price", help="cost-anchored pricing: electricity + 50% service margin")
