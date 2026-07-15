@@ -1,99 +1,38 @@
 # Delta V — decentralized AI network
 
-Собственный лёгкий PoS-блокчейн + сеть GPU-нод (класс NVIDIA RTX 4070, 12 ГБ VRAM) +
-умный роутинг моделей с [HuggingFace](https://huggingface.co/models). Пользователь шлёт
-запрос в OpenAI-совместимый шлюз — сеть сама выбирает лучшую модель, которая физически
-влезает в VRAM живых нод, исполняет инференс, записывает чек в чейн, платит ноде токенами
-DVT и выборочно перепроверяет её честность.
+A lightweight proof-of-stake blockchain + a network of GPU nodes +
+smart routing of open-source models from
+[HuggingFace](https://huggingface.co/models). A user sends a request to
+an OpenAI/Ollama/Anthropic-compatible gateway; the network picks the best
+model that physically fits the VRAM of a live node, runs the inference,
+records a receipt on-chain, pays the node in DVT tokens, and randomly
+re-verifies its honesty.
 
 ```
-клиент ──► gateway (/v1/chat/completions)
-              │  SmartRouter: модель ⨯ нода (VRAM-fit, репутация, стейк, загрузка)
+client ──► gateway (/v1/chat/completions · /api/chat · /v1/messages)
+              │  SmartRouter: model ⨯ node (VRAM-fit, reputation, stake, price, load)
               ▼
-        node daemon ──► ComputeBackend (llama.cpp: NVIDIA/AMD/CPU; groq/asic — скелеты)
+        node daemon ──► ComputeBackend (llama.cpp/Vulkan on AMD·NVIDIA·Intel·CPU; Groq; …)
               │
               ▼
-        Delta V chain: INFERENCE_RECEIPT (оплата) ──► SPOT_CHECK (перепроверка / слэшинг)
+        Delta V chain: INFERENCE_RECEIPT (payment) ──► SPOT_CHECK (re-run / slashing)
 ```
 
-## Компоненты
+Vendor-agnostic by design: the same GGUF runs on **AMD, NVIDIA, Intel,
+Apple or CPU** via llama.cpp (Vulkan needs no CUDA/ROCm). The API *shape*
+is just a translation layer — it is independent of the model. Because we
+serve open models, the network speaks the surfaces that ecosystem
+expects: **OpenAI** (the de-facto standard), **Ollama** (local-model
+tools), and **Anthropic** (a bridge for Claude-native agents).
 
-| Пакет | Что делает |
-|---|---|
-| `deltav/chain/` | PoS-чейн: блоки, транзакции, детерминированный выбор пропозера по стейку, форк-чойс longest-chain, мемпул |
-| `deltav/compute/` | Абстракция вычислений: `llamacpp` (NVIDIA/AMD/Intel/Apple/CPU — один GGUF везде), `mock` (детерминированный, для симуляции), скелеты `groq` и `asic` |
-| `deltav/router/` | Каталог GGUF-моделей HF с оценкой VRAM (веса + KV-cache + overhead), скоринг нод, диспетчеризация с failover |
-| `deltav/node/` | Демон ноды: полный узел чейна + P2P-госсип + inference-сервер + спот-чекер |
-| `deltav/gateway/` | OpenAI-совместимый API; кошелёк шлюза — плательщик за инференс |
+## Get a node running (5 minutes, anyone) — `deltav setup`
 
-## Токеномика
-
-Цена заякорена в себестоимости: **держатель ноды окупает электричество и
-получает +50% за сервис**. Всё выводится из трёх чисел:
-
-```
-Дж/токен   = ватты / (токен/с)
-кВт·ч на 1M = ватты / (tps × 3.6)
-$/1M       = кВт·ч × цена_электричества × 1.5
-```
-
-Коэффициент электричества — **среднемировая** цена ($0.155/кВт·ч):
-децентрализованная сеть не привязана к тарифу одной страны, а каждый
-оператор считает свою цену (`deltav price --watts ... --tps ...
---kwh-usd ...`) и выставляет её на рынок (`--price`). Дешёвое
-электричество → ниже цена → больше трафика.
-
-Референс-пег: нода 150 Вт / 30 tok/s при мировом среднем стоит
-$0.32/1M с маржой → дефолтная цена сети 10 udvt/токен = 10 DVT за 1M
-→ **1 DVT ≈ $0.032**.
-
-**Chain pool**: `pool_fee_bps` (10%) каждого платежа за инференс
-аккумулируется в пуле; каждые `epoch_blocks` пул распределяется:
-`dev_share_bps` (30%) — в фонд разработчиков (`--dev-fund` в генезисе),
-остальное — нодам пропорционально токенам, отработанным за эпоху.
-Целочисленная пыль остаётся в пуле; если в эпоху никто не работал —
-доля нод переносится дальше. Пул виден в `/chain/stats` и эксплорере.
-
-## Экономика и доверие
-
-- **DVT** (1 DVT = 10⁶ udvt). Реквестер платит `price_per_token` за каждый токен; нода
-  дополнительно получает эмиссию за чек, пропозер — за блок.
-- **Авторизация оплаты**: нода может списать деньги только предъявив подпись реквестера
-  над `(request_hash, node, model, price_limit)` — украсть оплату или превысить лимит нельзя.
-- **Spot-check**: валидаторы детерминированно выбирают долю чеков (`spot_check_rate`),
-  скачивают у ноды исходный джоб, перепрокатывают его на своём бэкенде и сверяют хэш
-  вывода. Ложь ⇒ сжигание доли стейка (`slash_fraction`) и обвал репутации.
-  Для недетерминированных бэкендов (GPU-сэмплинг, Groq) — **fuzzy-режим**: сверка
-  количества сгенерированных токенов (ловит биллинг за несделанную работу).
-- **Unbonding**: анстейк замораживает средства на `unbonding_blocks`; слэш достаёт
-  и анбондящиеся суммы — увернуться от наказания быстрым выводом стейка нельзя.
-- **Liveness**: пропозер на (height, slot) детерминирован; если слот 0 молчит
-  block_time — право переходит слоту 1 и т.д. (`max_slots`). Чейн не встаёт из-за
-  мёртвого валидатора; прогульщики копят misses и садятся в джейл (`jail_blocks`).
-- **Роутинг**: `score = 3·model_ready + 2·reputation + 1.5·(1−load) + 1·stake + 0.5·freshness`;
-  «auto» выбирает самую качественную модель каталога, которую живые ноды уже анонсировали
-  (без холодной загрузки), иначе — что влезает в их VRAM. На 12 ГБ (4070) это Qwen2.5-14B
-  Q4_K_M; 32B/70B честно отсекаются по VRAM-оценке.
-
-## Быстрый старт
-
-```bash
-pip install -e .[dev]          # + .[gpu] для llama.cpp, .[hub] для живого каталога HF
-pytest                          # 42 теста: чейн, консенсус, роутер, e2e со слэшингом
-
-# локальная сеть: 3 ноды + шлюз + блоки + инференс + спот-чеки
-deltav sim --nodes 3 --duration 20
-```
-
-## Реальная сеть
-
-### Нода за 5 минут (для всех) — `deltav setup`
-
-Дружелюбный мастер проведёт от чистой машины до живой ноды, объясняя
-каждый шаг простым языком: сам определит железо, **скачает готовый
-движок llama.cpp под вашу ОС/видеокарту** (Vulkan для AMD/NVIDIA/Intel,
-Metal для Apple — без компиляции и CUDA), подберёт и скачает модель,
-заведёт кошелёк, подключит к сети, посчитает цену и запустит ноду:
+A friendly bilingual (EN/RU) wizard takes you from a bare machine to a
+live, earning node — explaining each step. It detects your hardware,
+**downloads the right prebuilt llama.cpp binary** for your OS+GPU (Vulkan
+for AMD/NVIDIA/Intel, Metal for Apple, CPU fallback — no compiling),
+picks and downloads a fitting model, creates a wallet, joins the network,
+computes a cost-anchored price, and launches everything.
 
 ```bash
 # Linux / macOS
@@ -101,142 +40,131 @@ curl -fsSL https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.sh 
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.ps1 | iex
 
-# или, если Python уже есть:
-deltav setup --seed http://<любая-живая-нода>:9100
+# or, if you already have Python 3.11+:
+pip install "deltav-network[gpu,hub] @ git+https://github.com/alexkolumbo/deltav"
+deltav setup --seed http://<any-live-node>:9100
 ```
 
-В конце мастер печатает адрес панели ноды, ваш адрес для заработка и
-скрипт `start-node`, чтобы в следующий раз запускать одной командой.
-`--no-start` — подготовить всё, но не запускать.
+You can accept the recommended model or paste your own HuggingFace repo —
+**analyzed** for fit (verdict + max context) or **forced** as-is.
 
-### Нода вручную — `deltav join`
+## Connect a client
 
-Для тех, кто хочет контроль: `deltav join` определяет железо, подбирает
-модель, скачивает её, забирает генезис у seed-ноды и запускается.
+The gateway is a full **OpenAI-compatible** endpoint with streaming (SSE),
+tool calling and billing, plus **Ollama** and **Anthropic** surfaces.
+
+| Client expects | Point it at | Notes |
+|---|---|---|
+| OpenAI | `http://<gw>:9000/v1` | goose, opencode, openai SDK, most tools |
+| Ollama | `http://<gw>:9000` | Open WebUI, LangChain-Ollama, desktop apps |
+| Anthropic | `http://<gw>:9000` | OpenClaw & Claude-native agents (anthropic SDK) |
 
 ```bash
-pip install "deltav-network[gpu,hub] @ git+https://github.com/alexkolumbo/deltav"   # llama.cpp под своё железо
-deltav join --seed http://<any-node>:9100 --endpoint http://<my-ip>:9100 --stake 1000
+# OpenAI
+curl http://<gw>:9000/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":true}'
+# Ollama
+curl http://<gw>:9000/api/chat \
+  -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Первая нода сети стартует с локальным генезисом:
+Recipes for goose / opencode / Open WebUI / OpenClaw / Hermes and the
+`deltav.client.DeltaVClient` SDK are in [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
+
+### Delta V's own client tools
 
 ```bash
-deltav wallet new --file node1.wallet.json
-deltav genesis --alloc dv1...=100000 --stake dv1...=10000 -o genesis.json
-deltav join --genesis genesis.json --wallet node1.wallet.json --port 9100
+deltav connect --url http://gw1:9000,http://gw2:9000 --key dvk_… --model auto
+deltav repl                     # interactive streaming chat; /agent /swarm /model
+deltav swarm "compare two approaches" --mode vote -n 3   # fan across models/nodes
+deltav chat "Explain delta-v"   # one-shot
 ```
 
-(`deltav node` остаётся для ручной настройки: свой набор моделей, `--backend`, пиры.)
+## Model planner
 
-### Планировщик моделей
-
-Сеть сама говорит железу, что ему запускать. Точная математика: веса +
-KV-кэш по архитектуре (слои × KV-головы × head_dim × тип кэша) + буферы:
+The network tells hardware what to run — exact per-architecture memory
+math (weights + KV cache by layers × KV-heads × head_dim × cache type +
+buffers):
 
 ```bash
-deltav plan                          # детект железа -> таблица оптимумов
-deltav plan --objective max_context  # самый длинный контекст на этом железе
-GET  http://<node>:9100/plan         # то же на любой ноде
-GET  http://<gw>:9000/v1/plan?vram_mb=8176   # + что уже served на сети
+deltav plan                          # detect hardware -> ranked options + launch commands
+deltav plan --objective max_context  # the longest context this hardware can hold
+GET http://<gw>:9000/v1/plan?vram_mb=8176   # + which models are already warm on the net
 ```
 
-Каждая опция включает готовую команду запуска llama-server (включая
-`-fa` и квантование KV-кэша, когда оно нужно). Пример для 8 ГБ (RX 6600M):
-Llama-3.2-3B тянет **полные 128k контекста** (KV q4_0), Llama-3.1-8B —
-32k (KV q4_0) или 16k (KV q8_0).
+On 8 GB (RX 6600M): Qwen2.5-7B fits its native 32k context; Llama-3.2-3B
+reaches its full 128k (quantized KV). The catalog ships 21 curated chat
+models (0.5B–70B: Qwen2.5, Llama 3.x, Gemma 2, Phi, Mistral-Nemo/Small,
+DeepSeek-R1-Distill…) with architecture facts, plus embedding models.
 
-### Эксплорер
+## Tokenomics
 
-Крутится на каждой ноде: **`http://<node>:9100/explorer`** — высота, саплай,
-валидаторы, таблица нод (железо, live-загрузка, репутация, стейк, джейл),
-последние блоки со слотами, чеки инференса со статусом верификации.
-JSON-варианты: `/chain/stats`, `/chain/nodes`, `/chain/receipts`.
+Price is anchored in cost: **a node operator recovers electricity and
+earns a 50% service margin**. Everything derives from three numbers:
 
-### Шлюз и клиенты
+```
+J/token    = watts / (tokens/sec)
+kWh per 1M = watts / (tps × 3.6)
+$/1M       = kWh × electricity_price × 1.5
+```
+
+The electricity coefficient is the **world-average** household price
+($0.155/kWh) — a decentralized network isn't tied to one country's tariff,
+and each operator computes their own (`deltav price`) and sets it on the
+market (`--price`). Cheaper power → lower price → more traffic. Reference
+peg: a 150 W / 30 tok/s node at the world average costs $0.32/1M with the
+margin → the default network price of 10 udvt/token = 10 DVT per 1M →
+**1 DVT ≈ $0.032**.
+
+**Chain pool**: `pool_fee_bps` (10%) of every inference payment accrues
+to an on-chain pool; every `epoch_blocks` it's distributed — `dev_share_bps`
+(30%) to a dev fund, the rest to nodes pro-rata to tokens served that epoch.
+
+**Billing**: an API key (`dvk_…`) is a custodial on-chain wallet. Fund its
+address; every request bearing the key is paid from it on-chain, so
+receipts charge the consumer and the gateway wallet stays untouched.
+`POST /v1/keys`, `deltav keys create/me`.
+
+## Trust & consensus
+
+- **Payment auth**: a node can only claim payment with the requester's
+  signature over `(request_hash, node, model, price_limit)` — no stealing
+  or exceeding the cap.
+- **Spot-check**: validators re-run a sampled fraction of jobs and compare
+  the output hash; lying burns a slice of stake and reputation. GPU/API
+  (non-deterministic) backends use fuzzy token-count verification.
+- **Liveness**: stake-weighted proposer with RANDAO randomization; fallback
+  slots keep blocks coming if a proposer is silent; absentees are jailed.
+- **Light client** (`deltav verify`): from a trusted genesis, verify chain
+  integrity (signatures, RANDAO), a quorum of nodes, and that every charge
+  against your key was actually authorized by your key.
+
+## Client tools
 
 ```bash
-deltav gateway --genesis genesis.json --node http://<node>:9100 --port 9000
-deltav chat "Explain delta-v" --gateway http://localhost:9000
-deltav models    # что сейчас умеет сеть
-deltav network   # ноды/стейки/репутации
-deltav balance dv1... && deltav send --to dv1... --amount 100
+deltav explorer   →  http://<node>:9100/explorer     # dashboard: nodes, blocks, receipts, pool
+deltav chat "…"                # web chat UI at /chat; Telegram bot in deltav/tgbot.py
+deltav network / models / balance / send
 ```
 
-Шлюз — полноценный OpenAI-совместимый эндпоинт **со стримингом (SSE)**:
-`goose`, `opencode`, Hermes-подобные боты и любой софт с настройкой
-"OpenAI base URL" работают из коробки → рецепты в
-[docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
+## Develop
 
-## Как добавить новый чип (Groq, кастомный ASIC)
+```bash
+pip install -e .[dev]
+pytest                          # 190 tests: chain, consensus, routing, billing, client, e2e
+deltav sim --nodes 3 --duration 20   # local network: nodes + gateway + blocks + spot-checks
+```
 
-Чейн и роутер видят только интерфейс `ComputeBackend` (`deltav/compute/base.py`):
-реализуйте `is_available / load / infer`, укажите `deterministic` (иначе спот-чеки
-перейдут в fuzzy-режим) и зарегистрируйте класс — больше ничего менять не нужно.
-Скелеты с инструкциями: `deltav/compute/groq.py`, `deltav/compute/asic.py`.
+## Adding a new accelerator
 
-## Статус / что дальше
+The chain and router only ever see the `ComputeBackend` interface
+(`deltav/compute/base.py`): implement `is_available / load / infer`
+(+ optional `embed`, `infer_stream`), set `deterministic` and
+`dynamic_models`, register the class — nothing else changes. Backends:
+`llamacpp` (in-process), `llamaserver` (local llama.cpp over HTTP —
+Vulkan for AMD without compiling), `groq` (LPU relay), `mock`, and an
+`asic` skeleton for custom chips.
 
-**Фаза 1 (MVP):** PoS-консенсус, P2P-синхронизация, оплата и слэшинг on-chain,
-VRAM-роутинг, OpenAI-совместимый API, локальная симуляция без GPU.
+## License
 
-**Фаза 2 (network hardening):** слот-механизм запасных пропозеров + джейл за
-пропуски (чейн переживает смерть валидатора — есть e2e-тест), unbonding-период со
-слэшем сквозь анбондинг, персистентность чейна (`--data-dir`, восстановление после
-рестарта, обрезка битого хвоста), инкрементальная синхронизация (полная
-перевалидация — только на форке), peer discovery (обмен пирами + эндпоинты из
-он-чейн реестра), fuzzy-верификация недетерминированных бэкендов.
-
-**Фаза 3 (onboarding + клиенты):** `deltav join` (железо → модель → генезис с
-seed → сеть одной командой), веб-эксплорер на каждой ноде, SSE-стриминг и
-интеграция агентского софта (goose/opencode/Hermes и т.п.), CLI-кошелёк
-(`balance`/`send`/`models`/`network`), детерминированный sibling-форк-чойс
-(меньший слот побеждает — занятые ноды больше не джейлятся из-за гонок).
-
-**Фаза 4 (надстройки):** OpenAI tool calling (`tools`/`tool_calls` поверх
-`<tool_call>`-протокола сырых комплишенов), internet search engine
-(`/v1/search`, DDG→Mojeek без ключей), серверные агенты (`/v1/agents/run` —
-ReAct-цикл на сети, каждый шаг рассуждения = оплаченный чек в чейне;
-встроенные инструменты `web_search`/`fetch_url`/`calculator`, реестр
-расширяем), CLI `search`/`agent`, скриптуемый mock (`[[reply]]`) для
-тестирования агентских стеков без LLM.
-
-**Фаза 5 (масштаб + реальное железо):** чекпоинты стейта (sibling-реорг за
-O(1 блок), валидация форка от ближайшего снапшота вместо генезиса);
-сквозной токен-стриминг нода→шлюз→клиент (`infer_stream` в бэкендах, SSE на
-ноде, passthrough в шлюзе; чек по-прежнему хэширует полный вывод — стриминг
-ничего не меняет on-chain; failover только до первого токена); реальный
-**Groq-бэкенд** (LPU-релей через OpenAI-совместимый API Groq,
-`GROQ_API_KEY`, модели `groq/<name>`, fuzzy-верификация; роутер
-синтезирует спеки для анонсированных не-каталожных моделей и никогда не
-шлёт GPU-модель на vram-0 релей).
-
-**Фаза 6 (рандомизация + мультиагентность):** RANDAO-рандомизация пропозера
-(каждый блок несёт `randao_reveal` — детерминированную ed25519-подпись над
-фиксированным `randao:{chain_id}:{height}`: грайндить нечем, timestamp не
-участвует; аккумулятор в стейте подмешивается в seed выбора; известное
-ограничение RANDAO — biasing через отказ производить блок — принимается и
-карается механикой misses/jail); мульти-GPU детект (суммарный VRAM,
-llama.cpp разложит слои сам) + семафор параллельных джобов
-(`--parallel`, load = active/max); память агентов (BM25-хранилище с
-сессиями и персистентностью, инструменты `remember`/`recall`,
-авто-подмешивание релевантного контекста в задачу, `GET /v1/memory`);
-мультиагентность: инструмент `spawn_agents` — до 4 параллельных
-суб-агентов со свежим контекстом (философия tiny-turn).
-
-**Фаза 7 (эмбеддинги + векторный RAG + рынок цен):** эмбеддинги как второй
-тип оплачиваемой работы сети (`ComputeBackend.embed`, llama.cpp нативно
-батчит тексты, mock — детерминированный hashed-BoW с реальной косинусной
-семантикой; `/embed` на ноде с чеком и спот-чеком, OpenAI-совместимый
-`POST /v1/embeddings` на шлюзе); векторная память агентов (`VectorMemory`:
-эмбеддинги покупаются у самой сети, косинусный поиск, graceful-фолбэк на
-BM25, когда embedding-нод нет); рынок цен (нода объявляет
-`price_per_token` он-чейн через `--price`, чеки платят цену ноды в пределах
-подписанного лимита реквестера, роутер предпочитает дешёвых, дорогие ноды
-честно отвечают 402 вместо неоплачиваемого чека).
-
-Дальше (фаза 8+):
-- continuous batching генерации (нужен llama.cpp server / vLLM-класс планировщик);
-- комиссия шлюза и биллинг внешних пользователей (ключи → кошельки);
-- лайт-клиенты (проверка чейна без полного стейта);
-- первая нода на физической 4070 (llama.cpp + CUDA, `deltav join`).
+MIT — see [LICENSE](LICENSE).

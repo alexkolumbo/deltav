@@ -1,20 +1,46 @@
-# Подключение клиентского софта к Delta V
+# Connecting client software to Delta V
 
-Шлюз Delta V говорит на диалекте OpenAI API (`/v1/chat/completions`,
-`/v1/models`, стриминг через SSE), поэтому **любой** инструмент с настройкой
-"OpenAI-compatible endpoint / base URL" работает с сетью напрямую.
+The gateway speaks the surfaces the open-source ecosystem expects — the
+API *shape* is a translation layer, independent of the model being
+served. Any tool with an **OpenAI**, **Ollama**, or **Anthropic** setting
+works with the network directly.
 
-Общие параметры:
+Common settings:
 
-| Параметр | Значение |
+| Setting | Value |
 |---|---|
-| Base URL | `http://<gateway-host>:9000/v1` |
-| API key | любой (пока не проверяется; позже — привязка к кошельку) |
-| Model | `auto` — сеть сама выберет лучшую влезающую модель, либо конкретный ref из `deltav models` |
+| OpenAI base URL | `http://<gateway>:9000/v1` |
+| Ollama host | `http://<gateway>:9000` |
+| Anthropic base URL | `http://<gateway>:9000` |
+| API key | any (or a funded `dvk_…` key for on-chain billing) |
+| Model | `auto` — the network picks the best fitting model — or a specific ref from `deltav models` |
 
-Оплата инференса происходит **на шлюзе**: его кошелёк подписывает лимит цены
-для каждого запроса, нода получает DVT через чек в чейне. Клиентскому софту
-об этом знать не нужно.
+Inference is paid **at the gateway**: its wallet (or the request's `dvk_`
+key) authorizes a price limit per request and the node is paid in DVT via
+an on-chain receipt. The client doesn't need to know about it.
+
+## Ollama-compatible tools (Open WebUI, LangChain, desktop apps)
+
+The gateway exposes the Ollama `/api/*` dialect, so the network looks like
+a local Ollama server:
+
+```bash
+# point any Ollama client at the gateway
+export OLLAMA_HOST=http://127.0.0.1:9000
+
+# or call it directly
+curl http://127.0.0.1:9000/api/tags
+curl http://127.0.0.1:9000/api/chat \
+  -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'
+```
+
+Supported: `/api/tags`, `/api/chat`, `/api/generate`, `/api/embeddings`,
+`/api/embed`, `/api/version`. Streaming is NDJSON (Ollama's format). Model
+names are loose — `auto`, a full ref, an ollama tag (`qwen2.5-7b:q4_k_m`),
+or a short name all resolve to a served model.
+
+**Open WebUI**: Settings → Connections → Ollama API → `http://<gw>:9000`.
+**LangChain**: `ChatOllama(base_url="http://<gw>:9000", model="auto")`.
 
 ## Goose (block/goose)
 
@@ -42,16 +68,16 @@ OPENAI_API_KEY: deltav
 }
 ```
 
-## OpenClaw / Claude-нативные агенты (Anthropic API)
+## OpenClaw / Claude-native agents (Anthropic API)
 
-Шлюз отдаёт **нативный Anthropic Messages API** — `POST /v1/messages` со
-стримингом в формате событий Anthropic (`message_start` → `content_block_delta`
-→ `message_stop`) и tool-use блоками. Софт на `anthropic` SDK подключается
-напрямую, без LiteLLM:
+The gateway serves a native **Anthropic Messages API** — `POST /v1/messages`
+with SSE in Anthropic's event format (`message_start` → `content_block_delta`
+→ `message_stop`) and tool-use blocks. Software built on the `anthropic`
+SDK connects directly, no LiteLLM shim:
 
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:9000
-export ANTHROPIC_API_KEY=deltav          # или ваш dvk_-ключ
+export ANTHROPIC_API_KEY=deltav          # or your dvk_ key
 export ANTHROPIC_MODEL=auto
 ```
 
@@ -59,17 +85,19 @@ export ANTHROPIC_MODEL=auto
 import anthropic
 c = anthropic.Anthropic(base_url="http://127.0.0.1:9000", api_key="deltav")
 msg = c.messages.create(model="auto", max_tokens=256,
-                        messages=[{"role": "user", "content": "привет"}])
+                        messages=[{"role": "user", "content": "hello"}])
 print(msg.content[0].text)
 ```
 
-Поддержаны `system`, `tools` (Anthropic input_schema) и `tool_result` —
-агент видит инструменты и возвращает `stop_reason: "tool_use"`.
+`system`, `tools` (Anthropic input_schema) and `tool_result` are supported;
+the model returns `stop_reason: "tool_use"` when it calls a tool.
 
-> Старый путь через LiteLLM-прокси (`model: openai/auto`, `api_base:
-> …/v1`) тоже работает, если инструмент жёстко ждёт именно его.
+> The Anthropic surface is a bridge for Claude-native clients — the models
+> themselves are open-source (Qwen, Llama, Gemma…). If a tool hard-requires
+> LiteLLM, the classic `model: openai/auto`, `api_base: …/v1` proxy also
+> works.
 
-## Hermes (и любые OPENAI_BASE_URL-боты)
+## Hermes (and any OPENAI_BASE_URL bot)
 
 ```bash
 export OPENAI_BASE_URL=http://127.0.0.1:9000/v1
@@ -92,78 +120,70 @@ for chunk in resp:
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
-## curl
-
-```bash
-curl http://127.0.0.1:9000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model": "auto", "messages": [{"role": "user", "content": "hi"}], "stream": true}'
-```
-
 ## Tool calling
 
-Шлюз поддерживает OpenAI-диалект `tools` / `tool_calls`: определения
-инструментов инжектируются в промпт (формат `<tool_call>` — Hermes/Qwen,
-на нём обучено большинство открытых instruct-моделей), ответ модели
-парсится обратно в `tool_calls` с `finish_reason: "tool_calls"`.
-Инструмент исполняет клиент (goose/opencode это делают сами), результат
-возвращается сообщением `role: "tool"` — стандартный цикл OpenAI.
+The gateway supports the OpenAI `tools` / `tool_calls` dialect (and the
+Anthropic equivalent): tool definitions are injected into the prompt (the
+`<tool_call>` format most open instruct models were trained on), the
+model's reply is parsed back into `tool_calls` with `finish_reason:
+"tool_calls"`. The client executes the tool (goose/opencode do this
+themselves) and returns the result as a `role: "tool"` message.
 
-## Встроенные надстройки сети
+## Network overlays
 
 ```bash
-# интернет-поиск (DDG -> Mojeek fallback, без API-ключей)
+# internet search (DDG -> Mojeek, no API keys)
 GET /v1/search?q=<query>&max_results=5
 deltav search "rtx 4070 llm benchmarks"
 
-# серверный агент: ReAct-цикл прямо на сети; каждый шаг рассуждения —
-# оплаченный чек в чейне (receipt_tx в каждом step)
+# server-side agent: a ReAct loop on the network; each reasoning step is a
+# paid, spot-checkable receipt (receipt_tx in every step)
 POST /v1/agents/run {"task": "...", "model": "auto", "max_steps": 6}
-deltav agent "найди последнюю версию llama.cpp и посчитай 2**20"
+deltav agent "find the latest llama.cpp release and compute 2**20"
 ```
 
-Встроенные инструменты агента: `web_search`, `fetch_url`, `calculator`
-(реестр расширяем — `deltav/overlay/tools.py::ToolRegistry`).
+Built-in agent tools: `web_search`, `fetch_url`, `calculator`
+(extensible — `deltav/overlay/tools.py::ToolRegistry`).
 
-## Мультинода — сворм агентов
+## Multi-node — a swarm of agents
 
 ```bash
-# одну задачу — нескольким РАЗНЫМ моделям параллельно (каждая на своей ноде),
-# затем синтез лучшего ответа
+# fan one task across several DISTINCT models in parallel (each on whichever
+# node serves it), then synthesize the best answer
 POST /v1/swarm {"task": "...", "n": 3, "mode": "vote"}
-deltav swarm "оцени риски этого плана" --mode vote -n 3
+deltav swarm "assess the risks of this plan" --mode vote -n 3
 
-# режимы: fanout (разные ответы), vote (+синтез), map (по задаче на воркера)
+# modes: fanout (diverse answers), vote (+synthesis), map (one task per worker)
 POST /v1/swarm {"tasks": ["A","B","C"], "mode": "map"}
 ```
 
-Каждый воркер маршрутизируется независимо, поэтому работа расходится по
-живым нодам сети. В ответе — `workers[]` (модель, нода, ответ, чек) и
-синтезированный `answer` для режима vote.
+Each worker routes independently, so work spreads across live nodes. The
+response has `workers[]` (model, node, answer, receipt) and a synthesized
+`answer` for vote mode.
 
-## Свой клиент и REPL
+## Your own client and REPL
 
 ```bash
 deltav connect --url http://gw1:9000,http://gw2:9000 --key dvk_… --model auto
-deltav repl                     # интерактивный чат со стримингом; /agent /swarm /model
+deltav repl                     # interactive streaming chat; /agent /swarm /model
 ```
 
-`connect` сохраняет профиль (несколько base URL для failover + ключ) в
-`~/.deltav/client.json`; `deltav repl`, `swarm`, а также Python-SDK
-`deltav.client.DeltaVClient` берут его оттуда.
+`connect` saves a profile (multiple base URLs for failover + key) to
+`~/.deltav/client.json`; `deltav repl`, `swarm`, and the Python SDK
+`deltav.client.DeltaVClient` all read it.
 
 ```python
 from deltav.client import DeltaVClient
-c = DeltaVClient.from_profile()          # или base_urls=[...], api_key="dvk_…"
+c = DeltaVClient.from_profile()          # or base_urls=[...], api_key="dvk_…"
 print(c.chat([{"role": "user", "content": "hi"}])["choices"][0]["message"]["content"])
-for chunk in c.chat_stream([...]): ...   # стриминг
-c.swarm("сравни два подхода", n=2, mode="vote")
+for chunk in c.chat_stream([...]): ...   # streaming
+c.swarm("compare two approaches", n=2, mode="vote")
 ```
 
-Поле `deltav` в не-стриминговом ответе показывает, какая нода обслужила
-запрос и хэш чека в чейне — его можно найти в эксплорере
+The `deltav` field in a non-streaming response shows which node served the
+request and its on-chain receipt hash — find it in the explorer
 (`http://<node>:9100/explorer`).
 
-> Примечание: точные имена полей конфига у goose/opencode меняются от версии
-> к версии — сверяйтесь с документацией инструмента; неизменная часть — это
-> base URL шлюза и `model: auto`.
+> Note: exact config field names for goose/opencode change across versions —
+> check the tool's docs; the constant part is the gateway base URL and
+> `model: auto`.

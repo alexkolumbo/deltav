@@ -25,6 +25,7 @@ from .anthropic import (
     to_anthropic_message,
     to_anthropic_tool_stream,
 )
+from . import ollama as ol
 from .keys import KEY_PREFIX, KeyRecord, KeyStore
 
 from ..config import ChainParams
@@ -148,6 +149,52 @@ class GatewayDaemon:
             if ref not in picked and (spec is None or spec.kind == "chat"):
                 picked.append(ref)
         return picked[:n]
+
+    async def _ollama_run(self, payer, record, model: str, tag: str, prompt: str,
+                          max_tokens: int, temperature: float, stream: bool, kind: str):
+        """Shared chat/generate runner for the Ollama API (NDJSON stream or
+        a single JSON object), billed like any request."""
+        if stream:
+            try:
+                spec = self.router.resolve_model(model)
+                upstream = self.router.route_stream(
+                    prompt=prompt, model=spec.ref, max_tokens=max_tokens,
+                    temperature=temperature, requester=payer)
+                first = await upstream.__anext__()
+            except (RouteError, StopAsyncIteration) as exc:
+                raise HTTPException(503, str(exc))
+            holder: dict = {}
+
+            async def pieces():
+                kind0, value = first
+                if kind0 == "token" and value:
+                    yield value
+                async for k, v in upstream:
+                    if k == "token" and v:
+                        yield v
+                    elif k == "final":
+                        total = v.tokens_in + v.tokens_out
+                        holder.update(tokens_in=v.tokens_in, tokens_out=v.tokens_out,
+                                      meta={"node": v.node, "receipt_tx": v.receipt_tx})
+                        if record is not None:
+                            self.keys.record_usage(record, total,
+                                                   total * self.params.price_per_token)
+
+            gen = (ol.chat_stream if kind == "chat" else ol.generate_stream)(tag, pieces(), holder)
+            return StreamingResponse(gen, media_type="application/x-ndjson")
+
+        try:
+            result = await self.router.route(prompt=prompt, model=model,
+                                             max_tokens=max_tokens, temperature=temperature,
+                                             requester=payer)
+        except RouteError as exc:
+            raise HTTPException(503, str(exc))
+        total = result.tokens_in + result.tokens_out
+        if record is not None:
+            self.keys.record_usage(record, total, total * self.params.price_per_token)
+        meta = {"node": result.node, "receipt_tx": result.receipt_tx}
+        builder = ol.chat_response if kind == "chat" else ol.generate_response
+        return builder(tag, result.text, result.tokens_in, result.tokens_out, meta)
 
     async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not self.router.nodes:
@@ -478,6 +525,90 @@ class GatewayDaemon:
                 "deltav": {"node": result.node, "receipt_tx": result.receipt_tx,
                            "attempts": result.attempts},
             }
+
+        # ------------------------------------------------------ Ollama API
+        @app.get("/api/version")
+        async def ollama_version() -> dict:
+            return {"version": "deltav-0.1.0"}
+
+        @app.get("/api/tags")
+        async def ollama_tags() -> dict:
+            await self.router.refresh(self.node_urls)
+            served = {m for n in self.router.nodes if n.alive for m in n.models}
+            return ol.tags_payload(self.catalog.specs, served)
+
+        def _served_refs() -> list[str]:
+            return [m for n in self.router.nodes if n.alive and n.active for m in n.models]
+
+        @app.post("/api/chat")
+        async def ollama_chat(body: dict, request: Request):
+            payer, record = await self._requester_from(request)
+            messages = body.get("messages") or []
+            if not messages:
+                raise HTTPException(400, "messages required")
+            prompt = ol.chat_messages_to_prompt(messages)
+            opts = body.get("options") or {}
+            max_tokens = int(opts.get("num_predict", 512) if opts.get("num_predict", 512) > 0 else 512)
+            await self.router.refresh(self.node_urls)
+            model = ol.resolve_model(body.get("model", "auto"), _served_refs(), self.catalog)
+            tag = body.get("model", "auto")
+            await self._precheck_funds(record, prompt, max_tokens)
+            stream = body.get("stream", True)  # Ollama defaults to streaming
+            return await self._ollama_run(payer, record, model, tag, prompt, max_tokens,
+                                          float(opts.get("temperature", 0.0)), stream, kind="chat")
+
+        @app.post("/api/generate")
+        async def ollama_generate(body: dict, request: Request):
+            payer, record = await self._requester_from(request)
+            prompt_in = body.get("prompt", "")
+            if not prompt_in:
+                raise HTTPException(400, "prompt required")
+            prompt = f"user: {prompt_in}\nassistant:"
+            opts = body.get("options") or {}
+            max_tokens = int(opts.get("num_predict", 512) if opts.get("num_predict", 512) > 0 else 512)
+            await self.router.refresh(self.node_urls)
+            model = ol.resolve_model(body.get("model", "auto"), _served_refs(), self.catalog)
+            tag = body.get("model", "auto")
+            await self._precheck_funds(record, prompt, max_tokens)
+            stream = body.get("stream", True)
+            return await self._ollama_run(payer, record, model, tag, prompt, max_tokens,
+                                          float(opts.get("temperature", 0.0)), stream,
+                                          kind="generate")
+
+        @app.post("/api/embeddings")
+        async def ollama_embeddings(body: dict, request: Request) -> dict:
+            payer, record = await self._requester_from(request)
+            text = body.get("prompt", "")
+            if not text:
+                raise HTTPException(400, "prompt required")
+            await self.router.refresh(self.node_urls)
+            await self._precheck_funds(record, text, 16)
+            try:
+                result = await self.router.route_embed([text], model="auto", requester=payer)
+            except RouteError as exc:
+                raise HTTPException(503, str(exc))
+            if record is not None:
+                self.keys.record_usage(record, result.tokens,
+                                       result.tokens * self.params.price_per_token)
+            return {"embedding": result.vectors[0]}
+
+        @app.post("/api/embed")
+        async def ollama_embed(body: dict, request: Request) -> dict:
+            payer, record = await self._requester_from(request)
+            raw = body.get("input", "")
+            texts = [raw] if isinstance(raw, str) else [str(t) for t in raw]
+            if not texts or not texts[0]:
+                raise HTTPException(400, "input required")
+            await self.router.refresh(self.node_urls)
+            await self._precheck_funds(record, " ".join(texts), 16 * len(texts))
+            try:
+                result = await self.router.route_embed(texts, model="auto", requester=payer)
+            except RouteError as exc:
+                raise HTTPException(503, str(exc))
+            if record is not None:
+                self.keys.record_usage(record, result.tokens,
+                                       result.tokens * self.params.price_per_token)
+            return {"model": body.get("model", "auto"), "embeddings": result.vectors}
 
         @app.post("/v1/messages")
         async def anthropic_messages(body: dict, request: Request):
