@@ -42,6 +42,25 @@ from .verify import spot_check_verdict
 log = logging.getLogger("deltav.node")
 
 MAX_PEERS = 32
+# Bounds on the node's in-memory maps so a long uptime / job flood can't grow
+# memory without limit. `jobs` only needs to outlive the spot-check window.
+MAX_SEEN_BLOCKS = 50_000
+MAX_JOBS = 10_000
+
+
+def _request_hash_from_job(job: dict) -> str:
+    """Recompute the request_hash from a stored job, matching exactly how the
+    serving handlers derive it — so a spot-checker can bind the job it fetched
+    to the receipt's request_hash and reject a swapped-in easier job."""
+    if job.get("type") == "embed":
+        return sha256_hex(canonical_json({"texts": list(job["texts"]), "model": job["model"]}))
+    if job.get("type") == "image":
+        return sha256_hex(canonical_json(
+            {"prompt": job["prompt"], "model": job["model"], "w": int(job["width"]),
+             "h": int(job["height"]), "steps": int(job["steps"]), "seed": int(job["seed"])}))
+    return sha256_hex(canonical_json(
+        {"prompt": job["prompt"], "model": job["model"],
+         "max_tokens": int(job["max_tokens"]), "seed": int(job["seed"])}))
 
 
 @dataclass
@@ -146,6 +165,19 @@ class NodeDaemon:
     def _note_new_head(self) -> None:
         self._head_seen_at = time.monotonic()
 
+    def _mark_seen(self, block_hash: str) -> None:
+        # Bounded dedup set: on overflow, clear (a re-seen old block is at
+        # worst re-gossiped once — cheap) so memory can't grow unbounded.
+        if len(self._seen_blocks) >= MAX_SEEN_BLOCKS:
+            self._seen_blocks.clear()
+        self._seen_blocks.add(block_hash)
+
+    def _trim_jobs(self) -> None:
+        # jobs only needs to outlive the spot-check window; drop the oldest
+        # (dicts preserve insertion order) once past the cap.
+        while len(self.jobs) > MAX_JOBS:
+            self.jobs.pop(next(iter(self.jobs)), None)
+
     def _add_peers(self, urls) -> None:
         """Add trusted peer URLs (from our own config or the on-chain node
         registry) directly. For URLs learned from gossip, use the verified
@@ -217,19 +249,25 @@ class NodeDaemon:
                 raise HTTPException(400, f"malformed block: {exc}")
             if block.hash in self._seen_blocks:
                 return {"status": "seen"}
-            self._seen_blocks.add(block.hash)
-            if from_url:
-                asyncio.get_running_loop().create_task(self._add_peer_verified(from_url))
+            self._mark_seen(block.hash)
+            # Only trust the gossip source as a peer after the block validates
+            # against consensus — not merely because it deserialized — so a
+            # junk block can't cheaply inject an attacker URL into the peer set.
+            def trust_source() -> None:
+                if from_url:
+                    asyncio.get_running_loop().create_task(self._add_peer_verified(from_url))
             try:
                 self.chain.add_block(block)
                 self._note_new_head()
                 self.mempool.prune(self.chain.state)
+                trust_source()
                 await self._gossip("/p2p/block", body)
                 return {"status": "accepted", "height": self.chain.height}
             except ConsensusError:
                 if self.chain.replace_sibling(block):
                     self._note_new_head()
                     self.mempool.prune(self.chain.state)
+                    trust_source()
                     await self._gossip("/p2p/block", body)
                     return {"status": "reorged", "height": self.chain.height}
                 if block.height > self.chain.height + 1 and from_url:
@@ -286,7 +324,10 @@ class NodeDaemon:
 
         @app.get("/chain/blocks")
         async def chain_blocks(start: int = 0, count: int = 500) -> dict:
-            return {"blocks": self.chain.blocks_from(start, count)}
+            # Cap the page so one request can't ask for the whole chain
+            # (bandwidth/memory amplification); sync pulls it in windows.
+            count = max(1, min(2000, count))
+            return {"blocks": self.chain.blocks_from(max(0, start), count)}
 
         @app.get("/chain/headers")
         async def chain_headers(start: int = 0, count: int = 2000) -> dict:
@@ -679,9 +720,10 @@ class NodeDaemon:
             ip = await probe_public_ip(self.client, peers)
             if ip:
                 candidate = f"http://{ip}:{self.cfg.port}"
-                reachable = mode == "direct" or await check_direct(
-                    self.client, peers, candidate, self.chain_id)
-                if reachable:
+                # Always confirm with the signed nonce callback — even in
+                # direct mode — so a single malicious peer can't make us
+                # announce an attacker's IP and eclipse our inference traffic.
+                if await check_direct(self.client, peers, candidate, self.chain_id):
                     self.cfg.endpoint = candidate
                     log.info("direct connectivity — announcing %s", candidate)
                     return
@@ -815,7 +857,7 @@ class NodeDaemon:
                 log.debug("own block rejected: %s", exc)
                 continue
             self._note_new_head()
-            self._seen_blocks.add(block.hash)
+            self._mark_seen(block.hash)
             self.mempool.prune(self.chain.state)
             await self._gossip("/p2p/block", {"block": block.to_dict(), "from_url": self.cfg.public_url()})
 
@@ -823,6 +865,7 @@ class NodeDaemon:
         params = self.chain.genesis.params
         while self._running:
             await asyncio.sleep(params.block_time)
+            self._trim_jobs()
             for peer in list(self.peers):
                 try:
                     resp = await self.client.get(f"{peer}/chain/head", timeout=5.0)
@@ -917,6 +960,16 @@ class NodeDaemon:
             resp.raise_for_status()
             job = resp.json()
         except httpx.HTTPError:
+            return None
+
+        # Bind the fetched job to the receipt: a cheating node could serve an
+        # easy job that reproduces its claimed output while having billed a
+        # different one. If the job doesn't hash to the receipt's request_hash,
+        # it's a failed check. (Malformed job → unknown, don't punish on noise.)
+        try:
+            if _request_hash_from_job(job) != receipt.request_hash:
+                return False
+        except (KeyError, ValueError, TypeError):
             return None
 
         if job.get("type") == "embed":

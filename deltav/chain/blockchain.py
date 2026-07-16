@@ -312,6 +312,12 @@ class Blockchain:
 
 
 class Mempool:
+    # Local admission bounds (not consensus): stop a flood of validly-signed
+    # but never-applying txs (e.g. throwaway keys with future nonces) from
+    # growing memory without limit.
+    MAX_TXS = 20_000
+    MAX_PER_SENDER = 256
+
     def __init__(self) -> None:
         self.txs: dict[str, Tx] = {}
 
@@ -321,6 +327,10 @@ class Mempool:
             return False
         h = tx.hash
         if h in self.txs:
+            return False
+        if len(self.txs) >= self.MAX_TXS:
+            return False
+        if sum(1 for t in self.txs.values() if t.sender == tx.sender) >= self.MAX_PER_SENDER:
             return False
         self.txs[h] = tx
         return True

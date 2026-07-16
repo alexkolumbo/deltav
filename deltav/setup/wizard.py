@@ -26,6 +26,29 @@ from .assets import resolve_llama_asset
 from .custom import analyze_model, parse_ref
 from .i18n import T, detect_lang
 
+
+def _safe_under(base: Path, name: str) -> Path:
+    """Resolve `name` strictly under `base`, refusing path-traversal. A
+    malicious archive member or HuggingFace filename could otherwise carry
+    `../` or an absolute path and write outside the install dir."""
+    leaf = Path(name).name  # drop any directory components
+    if not leaf or leaf in (".", ".."):
+        raise ValueError(f"unsafe filename: {name!r}")
+    dest = (base / leaf).resolve()
+    if base.resolve() not in dest.parents and dest != base.resolve():
+        raise ValueError(f"path escapes {base}: {name!r}")
+    return dest
+
+
+def _safe_extract(zf: zipfile.ZipFile, dest_dir: Path) -> None:
+    """Zip-slip-safe extraction: every member must resolve under dest_dir."""
+    base = dest_dir.resolve()
+    for member in zf.namelist():
+        target = (dest_dir / member).resolve()
+        if base != target and base not in target.parents:
+            raise ValueError(f"unsafe archive member: {member!r}")
+    zf.extractall(dest_dir)
+
 LLAMA_RELEASES = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
 DEFAULT_HOME = Path.home() / "deltav-node"
 
@@ -291,7 +314,7 @@ class SetupWizard:
         zip_path = self.llama_dir / chosen.filename
         download(assets[chosen.filename], zip_path, "engine")
         with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(self.llama_dir)
+            _safe_extract(zf, self.llama_dir)
         found = next((p for p in self.llama_dir.rglob("llama-server*")
                       if p.name.startswith("llama-server")), None)
         if found:
@@ -312,7 +335,7 @@ class SetupWizard:
     def download_model(self, total: int) -> None:
         self.step(4, total, "s_model_dl")
         repo, _, filename = self.spec.ref.partition("::")
-        dest = self.models_dir / (filename or f"{repo.split('/')[-1]}.gguf")
+        dest = _safe_under(self.models_dir, filename or f"{repo.split('/')[-1]}.gguf")
         if dest.exists() and dest.stat().st_size > 1_000_000:
             self.ok(self.t("model_have"))
         else:
@@ -344,7 +367,12 @@ class SetupWizard:
             self.warn(self.t("vision_skip"))
             self.state["mmproj_path"] = ""
             return
-        dest = self.models_dir / mm
+        try:
+            dest = _safe_under(self.models_dir, mm)
+        except ValueError:
+            self.warn(self.t("vision_skip"))
+            self.state["mmproj_path"] = ""
+            return
         self.note(self.t("vision_dl"))
         try:
             download(f"https://huggingface.co/{repo}/resolve/main/{mm}", dest, "mmproj")

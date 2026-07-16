@@ -49,6 +49,14 @@ async def test_whoami_and_echo_roundtrip():
     await client.aclose()
 
 
+# The candidate URL is SSRF-screened inside reachcheck, so it must be a
+# resolvable public IP (a fake hostname would be rejected before routing).
+# getaddrinfo on a numeric literal is offline. Peer URLs posted to directly
+# aren't screened, so they can stay symbolic.
+_PUB_B = "http://93.184.216.34"    # example.com's IP — public, numeric, offline
+_PUB_C = "http://93.184.216.35"
+
+
 async def test_check_direct_true_when_reachable():
     transport = MultiTransport()
     client = httpx.AsyncClient(transport=transport)
@@ -56,10 +64,9 @@ async def test_check_direct_true_when_reachable():
     a = _StubNode("dv1a", "chain-x", client)
     b = _StubNode("dv1b", "chain-x", client)
     transport.add("http://a", _reach_app(a))
-    transport.add("http://b", _reach_app(b))
+    transport.add(_PUB_B, _reach_app(b))
 
-    assert await probe_public_ip(client, ["http://a"])  # any non-empty ip
-    assert await check_direct(client, ["http://a"], "http://b", "chain-x") is True
+    assert await check_direct(client, ["http://a"], _PUB_B, "chain-x") is True
     await client.aclose()
 
 
@@ -68,8 +75,8 @@ async def test_check_direct_false_when_unroutable():
     client = httpx.AsyncClient(transport=transport)
     a = _StubNode("dv1a", "chain-x", client)
     transport.add("http://a", _reach_app(a))
-    # candidate http://nat:9300 has no route -> a's callback fails -> NAT.
-    assert await check_direct(client, ["http://a"], "http://nat:9300", "chain-x") is False
+    # public candidate that passes the SSRF screen but has no route -> NAT.
+    assert await check_direct(client, ["http://a"], _PUB_C, "chain-x") is False
     await client.aclose()
 
 
@@ -79,9 +86,9 @@ async def test_check_direct_false_on_chain_mismatch():
     a = _StubNode("dv1a", "chain-x", client)
     b = _StubNode("dv1b", "chain-OTHER", client)
     transport.add("http://a", _reach_app(a))
-    transport.add("http://b", _reach_app(b))
+    transport.add(_PUB_B, _reach_app(b))
     # reachable, but wrong chain -> not a valid direct peer for us.
-    assert await check_direct(client, ["http://a"], "http://b", "chain-x") is False
+    assert await check_direct(client, ["http://a"], _PUB_B, "chain-x") is False
     await client.aclose()
 
 
@@ -301,13 +308,15 @@ async def test_verify_peer_rejects_wrong_chain():
     params = ChainParams(chain_id="chain-A", block_time=0.05)
     kp = KeyPair.from_seed_hex("77" * 32)
     genesis = Genesis(params=params, alloc={kp.address: DVT})
-    node = NodeDaemon(kp, genesis, NodeConfig(endpoint="http://n", backend="mock"),
+    # verify_peer SSRF-screens the URL, so use a resolvable public IP host.
+    node_url = "http://93.184.216.34"
+    node = NodeDaemon(kp, genesis, NodeConfig(endpoint=node_url, backend="mock"),
                       client=client)
-    transport.add("http://n", node.app)
+    transport.add(node_url, node.app)
 
-    assert await verify_peer(client, "http://n", "chain-A") is True
-    assert await verify_peer(client, "http://n", "chain-B") is False
-    assert await verify_peer(client, "http://ghost", "chain-A") is False
+    assert await verify_peer(client, node_url, "chain-A") is True
+    assert await verify_peer(client, node_url, "chain-B") is False
+    assert await verify_peer(client, "http://ghost", "chain-A") is False  # unresolvable
     await client.aclose()
 
 

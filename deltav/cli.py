@@ -21,8 +21,16 @@ from .wallet import load_or_create, load_wallet, save_wallet, wallet_path
 
 
 def _cmd_wallet(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
     path = args.file or wallet_path()
     if args.action == "new":
+        # Overwriting an existing wallet destroys its key — and possibly its
+        # funds — irreversibly. Refuse unless the operator opts in with --force.
+        if Path(path).exists() and not getattr(args, "force", False):
+            print(f"refusing to overwrite existing wallet {path} "
+                  f"(use --force to replace it)", file=sys.stderr)
+            return 1
         keypair = KeyPair.generate()
         save_wallet(keypair, path)
         print(f"wallet written to {path}\naddress: {keypair.address}")
@@ -669,6 +677,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_wallet = sub.add_parser("wallet", help="manage wallets")
     p_wallet.add_argument("action", choices=["new", "show"])
     p_wallet.add_argument("--file", default=None)
+    p_wallet.add_argument("--force", action="store_true",
+                          help="overwrite an existing wallet file (destroys its key)")
     p_wallet.set_defaults(func=_cmd_wallet)
 
     p_gen = sub.add_parser("genesis", help="write a genesis file")

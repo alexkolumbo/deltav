@@ -83,7 +83,12 @@ def _safe_eval(node: ast.AST) -> float:
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
         return node.value
     if isinstance(node, ast.BinOp) and type(node.op) in _BIN_OPS:
-        return _BIN_OPS[type(node.op)](_safe_eval(node.left), _safe_eval(node.right))
+        left, right = _safe_eval(node.left), _safe_eval(node.right)
+        # A tiny expression like 9**9**9 has no long digit-runs but produces an
+        # astronomically large int that hangs the event loop — bound the power.
+        if type(node.op) is ast.Pow and abs(right) > 1000:
+            raise ValueError("exponent too large")
+        return _BIN_OPS[type(node.op)](left, right)
     if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPS:
         return _UNARY_OPS[type(node.op)](_safe_eval(node.operand))
     raise ValueError(f"unsupported expression element: {ast.dump(node)[:40]}")
@@ -111,13 +116,25 @@ def builtin_registry(client: httpx.AsyncClient) -> ToolRegistry:
         return format_results(await engine.search(query, int(max_results)))
 
     async def fetch_url(url: str, max_chars: int = 4000) -> str:
-        if not url.startswith(("http://", "https://")):
-            return "error: only http(s) URLs"
-        resp = await client.get(url, headers={"User-Agent": "deltav-agent/0.1"},
-                                timeout=20.0, follow_redirects=True)
-        resp.raise_for_status()
-        text = _WS_RE.sub(" ", _TAG_RE.sub(" ", resp.text)).strip()
-        return text[: int(max_chars)]
+        # SSRF guard: this runs server-side in the agent/companion loop and
+        # returns the body to the caller, so it must never reach internal
+        # hosts, cloud metadata, or non-web ports. Follow redirects manually,
+        # re-screening every hop (an external 302 can point back inside).
+        from ..net.security import screen_url
+
+        for _ in range(5):
+            reason = await screen_url(url, allow_private=False, allow_ports={80, 443})
+            if reason:
+                return f"error: url blocked ({reason})"
+            resp = await client.get(url, headers={"User-Agent": "deltav-agent/0.1"},
+                                    timeout=20.0, follow_redirects=False)
+            if resp.is_redirect and resp.headers.get("location"):
+                url = str(resp.url.join(resp.headers["location"]))
+                continue
+            resp.raise_for_status()
+            text = _WS_RE.sub(" ", _TAG_RE.sub(" ", resp.text)).strip()
+            return text[: int(max_chars)]
+        return "error: too many redirects"
 
     async def calculator(expression: str) -> str:
         return calculate(str(expression))

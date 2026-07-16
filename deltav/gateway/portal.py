@@ -9,14 +9,18 @@ behind the billing layer, by policy.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from ..config import DVT
+
+# Address shape — validated before interpolating into an upstream node URL.
+_ADDR_RE = re.compile(r"^dv1[0-9a-z]{6,64}$")
 
 
 async def _first_json(client: httpx.AsyncClient, seeds, path: str, timeout: float = 6.0):
@@ -353,6 +357,8 @@ def mount_portal(app: FastAPI, gw) -> None:
 
     @app.get("/portal/address/{address}")
     async def portal_address(address: str) -> dict:
+        if not _ADDR_RE.match(address):
+            raise HTTPException(400, "invalid address")
         acc = await _first_json(gw.client, gw.node_urls, f"/chain/account/{address}") or {}
         nodes = await gw.portal_data.chain_nodes()
         node = next((n for n in nodes if n.get("address") == address), None)

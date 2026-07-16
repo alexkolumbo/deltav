@@ -36,16 +36,21 @@ def mount_reach(app: FastAPI, node) -> None:
     async def net_reachcheck(body: dict) -> dict:
         # A peer asks us to prove *they* are reachable: we call their
         # /net/echo from the outside and confirm the nonce round-trips.
+        # The url is attacker-supplied, so screen it (LAN allowed, but not
+        # loopback / cloud-metadata) and never echo the raw transport error —
+        # otherwise this is an SSRF port-scan oracle for the node's own host.
+        from .security import screen_url
+
         url = str(body.get("url", "")).rstrip("/")
         nonce = str(body.get("nonce", ""))
-        if not (url.startswith("http://") or url.startswith("https://")):
-            return {"reachable": False, "reason": "bad url"}
+        if await screen_url(url, allow_private=True):
+            return {"reachable": False, "reason": "unreachable"}
         try:
             resp = await node.client.get(f"{url}/net/echo", params={"nonce": nonce}, timeout=5.0)
             resp.raise_for_status()
             data = resp.json()
-        except httpx.HTTPError as exc:
-            return {"reachable": False, "reason": str(exc)}
+        except httpx.HTTPError:
+            return {"reachable": False, "reason": "unreachable"}
         ok = data.get("nonce") == nonce and data.get("chain_id") == node.chain_id
         return {"reachable": bool(ok), "address": data.get("address")}
 

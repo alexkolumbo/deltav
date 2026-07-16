@@ -39,11 +39,19 @@ def _filter_headers(items) -> dict:
     return {k: v for k, v in items if k.lower() not in _HOP_HEADERS}
 
 
+# Relay resource bounds so a hostile caller can't exhaust a public relay.
+_VIA_QUEUE_MAX = 256        # queued inbound requests per origin
+_VIA_PENDING_MAX = 512      # concurrent awaited /via requests per origin
+_VIA_BODY_MAX = 16 * 1024 * 1024
+_CHALLENGES_MAX = 10_000
+_ORIGIN_IDLE_TTL = 300.0    # evict origins with no pull/push for this long
+
+
 # --------------------------------------------------------------- relay server
 @dataclass
 class _Origin:
     token: str
-    queue: "asyncio.Queue" = field(default_factory=asyncio.Queue)
+    queue: "asyncio.Queue" = field(default_factory=lambda: asyncio.Queue(maxsize=_VIA_QUEUE_MAX))
     pending: dict = field(default_factory=dict)   # req_id -> asyncio.Future
     last_seen: float = 0.0
 
@@ -67,6 +75,18 @@ class RelayServer:
         self._origins: dict[str, _Origin] = {}
         self._challenges: dict[str, tuple[str, float]] = {}  # node_id -> (nonce, expiry)
 
+    def _reap_origins(self) -> None:
+        """Evict origins that stopped pulling/pushing — otherwise a Sybil
+        attacher holds a capacity slot forever after disconnecting."""
+        cutoff = self._clock() - _ORIGIN_IDLE_TTL
+        for nid in [n for n, o in self._origins.items() if o.last_seen < cutoff]:
+            self._origins.pop(nid, None)
+
+    def _sweep_challenges(self) -> None:
+        now = self._clock()
+        for nid in [n for n, (_, exp) in self._challenges.items() if exp < now]:
+            self._challenges.pop(nid, None)
+
     @property
     def origin_count(self) -> int:
         return len(self._origins)
@@ -88,6 +108,9 @@ class RelayServer:
         @app.get("/relay/challenge")
         async def relay_challenge(node_id: str) -> dict:
             # A one-time nonce the node signs to prove it owns node_id.
+            self._sweep_challenges()
+            if len(self._challenges) >= _CHALLENGES_MAX:
+                raise HTTPException(503, "relay busy, try again")
             nonce = secrets.token_hex(16)
             self._challenges[node_id] = (nonce, self._clock() + 60.0)
             return {"nonce": nonce}
@@ -108,7 +131,9 @@ class RelayServer:
             if not verify_signature(pubkey, _attach_message(node_id, nonce), signature):
                 raise HTTPException(403, "bad signature")
             if node_id not in self._origins and self.origin_count >= self.max_origins:
-                raise HTTPException(503, "relay at capacity")
+                self._reap_origins()  # free slots held by disconnected attachers
+                if self.origin_count >= self.max_origins:
+                    raise HTTPException(503, "relay at capacity")
             token = secrets.token_hex(24)
             self._origins[node_id] = _Origin(token=token, last_seen=self._clock())
             return {"via_url": f"{self.public_url}/via/{node_id}",
@@ -145,7 +170,13 @@ class RelayServer:
             origin = self._origins.get(node_id)
             if origin is None:
                 raise HTTPException(502, "node not attached to this relay")
+            # Back-pressure: don't let a flood of inbound requests grow the
+            # queue / pending map without bound and OOM the relay.
+            if len(origin.pending) >= _VIA_PENDING_MAX:
+                raise HTTPException(503, "relayed node overloaded")
             body = await request.body()
+            if len(body) > _VIA_BODY_MAX:
+                raise HTTPException(413, "request body too large")
             req_id = secrets.token_hex(12)
             loop = asyncio.get_running_loop()
             fut = loop.create_future()
@@ -158,7 +189,11 @@ class RelayServer:
                 "headers": _filter_headers(request.headers.items()),
                 "body_b64": base64.b64encode(body).decode(),
             }
-            await origin.queue.put(job)
+            try:
+                origin.queue.put_nowait(job)
+            except asyncio.QueueFull:
+                origin.pending.pop(req_id, None)
+                raise HTTPException(503, "relayed node backlog full")
             try:
                 result = await asyncio.wait_for(fut, timeout=self.via_timeout)
             except asyncio.TimeoutError:

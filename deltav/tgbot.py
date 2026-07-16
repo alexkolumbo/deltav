@@ -38,6 +38,7 @@ SMART_CONTEXT_CHARS = 500
 class TgBot:
     def __init__(self, token: str, gateway: str, allow: set[int] | None = None,
                  client: httpx.AsyncClient | None = None, api_key: str = ""):
+        self._token = token
         self.api = f"https://api.telegram.org/bot{token}"
         self.file_api = f"https://api.telegram.org/file/bot{token}"
         self.gateway = gateway.rstrip("/")
@@ -56,12 +57,16 @@ class TgBot:
         self._seen: OrderedDict[int, None] = OrderedDict()
         self._locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
+    def _redact(self, text) -> str:
+        # The bot token appears in request URLs; keep it out of logs.
+        return str(text).replace(self._token, "***") if self._token else str(text)
+
     # ----------------------------------------------------------- telegram
     async def tg(self, method: str, **params):
         resp = await self.client.post(f"{self.api}/{method}", json=params)
         data = resp.json()
         if not data.get("ok"):
-            log.warning("telegram %s failed: %s", method, data)
+            log.warning("telegram %s failed: %s", method, self._redact(data))
         return data.get("result")
 
     async def send(self, chat_id: int, text: str) -> None:
@@ -307,7 +312,7 @@ class TgBot:
             try:
                 updates = await self.tg("getUpdates", offset=self._offset, timeout=50)
             except httpx.HTTPError as exc:
-                log.warning("poll error: %s", exc)
+                log.warning("poll error: %s", self._redact(exc))
                 await asyncio.sleep(5)
                 continue
             for update in updates or []:

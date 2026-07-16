@@ -50,6 +50,7 @@ class Charge:
     price_limit: int
     tokens: int
     authorized: bool  # requester signature verifies against the payer's key
+    duplicate: bool = False  # a later charge reusing one (request_hash, node) auth
 
 
 @dataclass
@@ -59,7 +60,13 @@ class AuditResult:
 
     @property
     def all_authorized(self) -> bool:
-        return all(c.authorized for c in self.charges)
+        # A duplicated authorization is NOT a clean charge, even if its
+        # signature verifies — one auth should settle exactly once.
+        return all(c.authorized and not c.duplicate for c in self.charges)
+
+    @property
+    def duplicate_charges(self) -> list[Charge]:
+        return [c for c in self.charges if c.duplicate]
 
     @property
     def total_price_limit(self) -> int:
@@ -139,6 +146,9 @@ def verify_charges(blocks: list[dict], payer_address: str,
     """Extract every INFERENCE_RECEIPT that charged `payer_address` and
     check the requester's payment-authorization signature."""
     result = AuditResult(address=payer_address)
+    # One signed authorization (request_hash + node) should settle exactly
+    # once; a node reusing it with a different output_hash is a replayed drain.
+    seen_auth: set[tuple[str, str]] = set()
     for bdict in blocks:
         for tdict in bdict.get("txs", []):
             if tdict.get("type") != TxType.INFERENCE_RECEIPT.value:
@@ -152,6 +162,9 @@ def verify_charges(blocks: list[dict], payer_address: str,
                 auth = receipt_auth_bytes(
                     p["request_hash"], tdict["sender"], p["model"], int(p["price_limit"]))
                 ok = verify_signature(pubkey, auth, p.get("requester_sig", ""))
+            auth_key = (p["request_hash"], tdict["sender"])
+            is_dup = auth_key in seen_auth
+            seen_auth.add(auth_key)
             receipt_hash = sha256_hex(canonical_json(
                 {"request_hash": p["request_hash"], "node": tdict["sender"],
                  "output_hash": p["output_hash"]}))
@@ -163,6 +176,7 @@ def verify_charges(blocks: list[dict], payer_address: str,
                 price_limit=int(p.get("price_limit", 0)),
                 tokens=int(p.get("tokens_in", 0)) + int(p.get("tokens_out", 0)),
                 authorized=ok,
+                duplicate=is_dup,
             ))
     return result
 

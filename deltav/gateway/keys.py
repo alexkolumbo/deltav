@@ -13,6 +13,7 @@ exactly like any hosted API provider.
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import time
 from dataclasses import asdict, dataclass, field
@@ -21,6 +22,14 @@ from pathlib import Path
 from ..crypto import KeyPair, sha256_hex
 
 KEY_PREFIX = "dvk_"
+
+# Guard against unbounded minting: keys.json is rewritten whole on every
+# create, so an unauthenticated mint flood is an O(n^2) disk-DoS.
+MAX_KEYS = 100_000
+
+
+class KeyLimitError(RuntimeError):
+    """Raised when the key store is at capacity."""
 
 
 @dataclass
@@ -47,13 +56,24 @@ class KeyStore:
         if self.path is None:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(self.path.parent, 0o700)
+        except OSError:
+            pass
         self.path.write_text(
             json.dumps({h: asdict(r) for h, r in self.records.items()},
                        ensure_ascii=False, indent=1),
             encoding="utf-8",
         )
+        # The file holds every custodial wallet's private seed — owner-only.
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
 
     def create(self, label: str = "") -> tuple[str, KeyRecord]:
+        if len(self.records) >= MAX_KEYS:
+            raise KeyLimitError("key store at capacity")
         api_key = KEY_PREFIX + secrets.token_hex(24)
         keypair = KeyPair.generate()
         record = KeyRecord(

@@ -43,12 +43,17 @@ from ..overlay import (
 )
 from ..companion import CompanionAgent, UserMemory, resolve_identity
 from ..net import RelayClient, check_direct, discover_relay, mount_reach, probe_public_ip
-from ..net.security import install_guards
+from ..net.security import _Bucket, client_ip, install_guards
 from ..overlay.memory import VectorMemory
 from ..overlay.tools import ToolSpec
 from ..router import Catalog, RouteError, SmartRouter
 from ..router.catalog import estimate_vram_mb
+from .keys import KeyLimitError
 from .portal import mount_portal
+
+# Fan-out ceiling: one swarm request must not spawn an unbounded number of
+# separately-billed jobs (spend amplification, especially for keyless callers).
+_SWARM_MAX = 8
 
 
 def extract_images(messages: list[dict]) -> list[str]:
@@ -123,6 +128,9 @@ class GatewayDaemon:
         # Billing: API keys are custodial on-chain wallets.
         self.keys = KeyStore(keys_path)
         self.require_keys = require_keys
+        # Slow per-IP limiter on key minting (unauthenticated, rewrites the
+        # whole store per call) — ~1 every 10s, small burst.
+        self._keys_bucket = _Bucket(0.1, 5.0, time.monotonic)
         self.app = self._build_app()
 
     @property
@@ -288,12 +296,17 @@ class GatewayDaemon:
         registry = ToolRegistry(self.tools.specs())
 
         if session_id:
+            # Namespace agent memory under "agent:" so a caller-supplied
+            # session_id can never be steered at the companion store
+            # ("companion:<address>") — recall stays inside the agent sandbox.
+            mem_session = f"agent:{session_id}"
+
             async def remember(text: str) -> str:
-                item = await self.memory.aadd(session_id, str(text))
+                item = await self.memory.aadd(mem_session, str(text))
                 return f"remembered as {item['id']}"
 
             async def recall(query: str, k: int = 4) -> str:
-                hits = await self.memory.asearch(session_id, str(query), int(k))
+                hits = await self.memory.asearch(mem_session, str(query), int(k))
                 if not hits:
                     return "no matching memories"
                 return "\n".join(f"[{h['id']}] {h['text']}" for h in hits)
@@ -410,8 +423,13 @@ class GatewayDaemon:
             return {"object": "list", "data": data}
 
         @app.post("/v1/keys")
-        async def keys_create(body: dict | None = None) -> dict:
-            api_key, record = self.keys.create(label=(body or {}).get("label", ""))
+        async def keys_create(request: Request, body: dict | None = None) -> dict:
+            if not self._keys_bucket.allow(client_ip(request)):
+                raise HTTPException(429, "too many key requests; try again shortly")
+            try:
+                api_key, record = self.keys.create(label=(body or {}).get("label", ""))
+            except KeyLimitError:
+                raise HTTPException(503, "key store at capacity")
             return {
                 "api_key": api_key,   # shown exactly once
                 "address": record.address,
@@ -503,7 +521,9 @@ class GatewayDaemon:
             memory_used: list[dict] = []
             agent_task = task
             if session_id:
-                memory_used = await self.memory.asearch(session_id, task, k=3)
+                # Same "agent:" namespace the remember/recall tools use, so
+                # auto-recall reads back what the agent stored.
+                memory_used = await self.memory.asearch(f"agent:{session_id}", task, k=3)
                 if memory_used:
                     context = "\n".join(f"- {h['text']}" for h in memory_used)
                     agent_task = f"Relevant memory from earlier sessions:\n{context}\n\nTask: {task}"
@@ -613,10 +633,13 @@ class GatewayDaemon:
             if not tasks:
                 raise HTTPException(400, "task or tasks required")
             mode = body.get("mode", "fanout")
-            max_tokens = int(body.get("max_tokens", 512))
+            max_tokens = min(4096, int(body.get("max_tokens", 512)))
+            # Cap the fan-out: one request must not spawn an unbounded number
+            # of separately-billed jobs (spend amplification, esp. keyless).
+            tasks = tasks[:_SWARM_MAX]
             await self.router.refresh(self.node_urls)
 
-            models = body.get("models") or self._distinct_models(int(body.get("n", 3)))
+            models = (body.get("models") or self._distinct_models(int(body.get("n", 3))))[:_SWARM_MAX]
             if not models:
                 raise HTTPException(503, "no live models to swarm across")
             await self._precheck_funds(record, " ".join(tasks), max_tokens * (len(models) + 1))
@@ -665,6 +688,15 @@ class GatewayDaemon:
 
         @app.get("/v1/memory")
         async def memory_view(session: str, q: str = "", k: int = 8) -> dict:
+            # Isolation: the per-user companion store ("companion:<address>")
+            # is private and has its own authenticated endpoint
+            # (/v1/companion/memory). This debug view must never reach it —
+            # wallet addresses are public, so otherwise anyone could read a
+            # user's companion memory by naming their address.
+            if session.startswith("companion:"):
+                raise HTTPException(403, "companion memory is private; "
+                                         "use /v1/companion/memory with your key")
+            k = max(1, min(50, int(k)))
             if q:
                 items = await self.memory.asearch(session, q, k)
             else:
