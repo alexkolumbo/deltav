@@ -151,17 +151,40 @@ class SetupWizard:
     def pick_model(self, total: int) -> None:
         self.step(2, total, "s_model")
         catalog = Catalog()
-        options = plan(self.device.vram_mb, objective="balanced", catalog=catalog)
-        if not options:
+        # Rank from the unified registry (curated catalog + HF-discovered DB).
+        from ..registry import ModelRegistry
+        reg = ModelRegistry(catalog=catalog)
+        ranked = reg.rank(self.device.vram_mb, kind="chat", top=12)
+        if not ranked:
             self.spec = catalog.specs[0]
             self.warn(self.t("light_model"))
         else:
-            best = options[0]
-            self.spec = catalog.by_ref(best.ref)
-            self._present_recommended(best)
+            self.spec = catalog.by_ref(ranked[0]["ref"]) or reg.discovered[ranked[0]["ref"]].to_spec()
+            self._present_ranked(ranked[0])
             if self.ask_yes("show_others", default=False):
-                self._choose_from_list(options, catalog)
+                self._choose_from_registry(ranked, catalog, reg)
         self.state["model"] = self.spec.ref
+
+    def _present_ranked(self, best: dict) -> None:
+        self.ok(self.t("recommend", name=best["ref"].split("/")[-1].split("::")[0]))
+        self.note(self.t("model_specs", b=best["params_b"], ctx=f"{best['max_context']:,}"))
+        self.note(self.t("download_once", size=human_mb(best["file_mb"])))
+
+    def _choose_from_registry(self, ranked: list, catalog, reg) -> None:
+        for i, r in enumerate(ranked[:12], 1):
+            tag = self.t("recommended_tag") if i == 1 else ""
+            src = "🔥" if r["served"] else ("👁" if r["vision"] else "")
+            say(f"    {i}. {r['ref'].split('/')[-1].split('::')[0]} "
+                f"· {r['params_b']}B · ctx {r['max_context']:,} {src}{tag}")
+        choice = self.ask(self.t("pick_number"), "1").lower()
+        if choice == "c":
+            self._custom_model()
+            return
+        try:
+            ref = ranked[int(choice) - 1]["ref"]
+            self.spec = catalog.by_ref(ref) or reg.discovered[ref].to_spec()
+        except (ValueError, IndexError, KeyError):
+            pass
 
     def _present_recommended(self, best) -> None:
         self.ok(self.t("recommend", name=self.spec.repo_id.split("/")[-1]))

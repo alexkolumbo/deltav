@@ -337,6 +337,19 @@ class GatewayDaemon:
                 "spent_udvt_estimate": record.spent_udvt,
             }
 
+        @app.get("/v1/registry")
+        async def registry_endpoint(vram_mb: int = 8176, kind: str = "chat",
+                                    top: int = 25) -> dict:
+            """The unified model DB: curated catalog + HF-discovered +
+            models live nodes serve, ranked for the given VRAM."""
+            from ..registry import ModelRegistry
+
+            await self.router.refresh(self.node_urls)
+            served = {m for n in self.router.nodes if n.alive for m in n.models}
+            reg = ModelRegistry(catalog=self.catalog)
+            return {"vram_mb": vram_mb, "kind": kind,
+                    "models": reg.rank(vram_mb, kind=kind, top=top, served=served)}
+
         @app.get("/v1/plan")
         async def plan_endpoint(vram_mb: int, objective: str = "balanced") -> dict:
             """Model planner enriched with live network state: which of the

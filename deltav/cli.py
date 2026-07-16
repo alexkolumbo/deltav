@@ -331,6 +331,50 @@ def _cmd_price(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_registry(args: argparse.Namespace) -> int:
+    import time as _time
+
+    from .registry import ModelRegistry
+
+    reg = ModelRegistry(path=args.file or None)
+
+    def do_sync() -> int:
+        n = reg.sync_from_hf(limit=args.limit, now=_time.time())
+        print(f"синхронизация HF: +{n} новых моделей (всего в БД: {len(reg.discovered)})")
+        return n
+
+    if args.action == "add":
+        m = reg.add_repo(args.repo, now=_time.time())
+        if m:
+            print(f"добавлено: {m.ref}  ({m.params_b}B {m.quant}, ~{m.file_mb} MB"
+                  f"{', vision' if m.vision else ''})")
+        else:
+            print("не удалось прочитать репо (нет GGUF или недоступен)", file=sys.stderr)
+            return 1
+    elif args.action == "sync":
+        if args.daemon:
+            print(f"бот-обновлятор БД моделей: каждые {args.interval}s. Ctrl+C для выхода.")
+            try:
+                while True:
+                    do_sync()
+                    _time.sleep(args.interval)
+            except KeyboardInterrupt:
+                print()
+        else:
+            do_sync()
+    else:  # list
+        vram = args.vram or (__import__("deltav.compute", fromlist=["detect_device"])
+                             .detect_device().vram_mb)
+        print(f"модели, влезающие в {vram} MB (kind={args.kind}):\n")
+        for i, r in enumerate(reg.rank(vram, kind=args.kind, top=args.top), 1):
+            tag = " 🔥served" if r["served"] else ""
+            vis = " 👁vision" if r["vision"] else ""
+            print(f"{i:2}. {r['ref'].split('::')[0].split('/')[-1]} "
+                  f"· {r['params_b']}B {r['quant']} · ctx {r['max_context']:,} "
+                  f"· q{r['quality']} · {r['source']}{vis}{tag}")
+    return 0
+
+
 def _cmd_plan(args: argparse.Namespace) -> int:
     from .compute import detect_device
     from .router.planner import launch_hint, plan
@@ -713,6 +757,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_price.add_argument("--usd-per-dvt", type=float, default=0.032,
                          help="DVT reference peg")
     p_price.set_defaults(func=_cmd_price)
+
+    p_reg = sub.add_parser("registry", help="auto-updating model DB (HuggingFace bot)")
+    p_reg.add_argument("action", choices=["sync", "add", "list"])
+    p_reg.add_argument("repo", nargs="?", default="", help="HF repo for 'add'")
+    p_reg.add_argument("--file", default="", help="registry JSON path")
+    p_reg.add_argument("--limit", type=int, default=40, help="HF repos to scan on sync")
+    p_reg.add_argument("--daemon", action="store_true", help="keep syncing (bot mode)")
+    p_reg.add_argument("--interval", type=int, default=3600, help="daemon sync interval, s")
+    p_reg.add_argument("--vram", type=int, default=0, help="filter list by VRAM MB")
+    p_reg.add_argument("--kind", default="chat", choices=["chat", "embedding", "image"])
+    p_reg.add_argument("--top", type=int, default=25)
+    p_reg.set_defaults(func=_cmd_registry)
 
     p_plan = sub.add_parser(
         "plan", help="hardware-aware model planner: what should this machine run?")

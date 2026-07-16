@@ -103,6 +103,23 @@ deltav plan --objective max_context  # the longest context this hardware can hol
 GET http://<gw>:9000/v1/plan?vram_mb=8176   # + which models are already warm on the net
 ```
 
+### Auto-updating model database
+
+A unified registry merges the curated catalog, models discovered from
+HuggingFace, and models live nodes serve — the wizard ranks from it:
+
+```bash
+deltav registry sync                 # HF bot: pull trending GGUF repos into the DB
+deltav registry sync --daemon        # keep it fresh on an interval
+deltav registry add <org/repo>       # add one HF repo (reads size/quant/arch/vision)
+deltav registry list --vram 8176     # ranked models that fit your VRAM
+GET http://<gw>:9000/v1/registry?vram_mb=8176   # the unified DB over HTTP
+```
+
+Reasoning models (DeepSeek-R1, Qwythos…) that split thinking into
+`reasoning_content` are handled — the backend returns the answer, or the
+reasoning when the answer didn't converge in the token budget.
+
 On 8 GB (RX 6600M): Qwen2.5-7B fits its native 32k context; Llama-3.2-3B
 reaches its full 128k (quantized KV). The catalog ships curated chat
 models (0.5B–70B: Qwen2.5, Llama 3.x, Gemma 2, Phi, Mistral-Nemo/Small,

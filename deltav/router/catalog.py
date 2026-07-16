@@ -142,6 +142,11 @@ CURATED_CATALOG: list[ModelSpec] = [
     ModelSpec("bartowski/gemma-2-27b-it-GGUF", "gemma-2-27b-it-Q4_K_M.gguf",
               "gemma2", 27.2, "Q4_K_M", 16600, 0.89,
               n_layers=46, n_kv_heads=16, head_dim=128, max_ctx=8192),
+    # Reasoning + vision 9B (Qwen-based); thinks in reasoning_content.
+    ModelSpec("empero-ai/Qwythos-9B-Claude-Mythos-5-1M-GGUF",
+              "Qwythos-9B-Claude-Mythos-5-1M-Q4_K_M.gguf",
+              "qwythos", 8.7, "Q4_K_M", 5368, 0.80, vision=True,
+              n_layers=48, n_kv_heads=8, head_dim=128, max_ctx=32768),
     # xAI's open Grok weights (big — for powerful nodes; still open, still
     # llama.cpp-servable once converted to GGUF).
     ModelSpec("xai-org/grok-1-GGUF", "grok-1-Q4_K_M.gguf",

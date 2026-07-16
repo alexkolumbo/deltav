@@ -80,8 +80,14 @@ class LlamaServerBackend(ComputeBackend):
         self._raise_with_detail(resp)
         data = resp.json()
         usage = data.get("usage") or {}
+        msg = data["choices"][0]["message"]
+        # Reasoning models (DeepSeek-R1, Qwythos, …) split the chain of
+        # thought into reasoning_content and the answer into content. Return
+        # the answer; if it's empty (thinking didn't converge in the token
+        # budget) fall back to the reasoning so the caller sees something.
+        text = msg.get("content") or msg.get("reasoning_content") or ""
         return InferResult(
-            text=data["choices"][0]["message"].get("content") or "",
+            text=text,
             tokens_in=int(usage.get("prompt_tokens", 0)),
             tokens_out=max(1, int(usage.get("completion_tokens", 1))),
             seed=request.seed,
@@ -92,6 +98,7 @@ class LlamaServerBackend(ComputeBackend):
 
     def infer_stream(self, request: InferRequest):
         pieces: list[str] = []
+        reasoning: list[str] = []
         tokens_in = 0
         tokens_out = 0
         body = self._chat_body(request) | {
@@ -114,12 +121,19 @@ class LlamaServerBackend(ComputeBackend):
                 choices = event.get("choices") or []
                 if not choices:
                     continue
-                piece = choices[0].get("delta", {}).get("content") or ""
+                delta = choices[0].get("delta", {})
+                piece = delta.get("content") or ""
                 if piece:
                     pieces.append(piece)
                     yield piece
+                elif delta.get("reasoning_content"):
+                    reasoning.append(delta["reasoning_content"])
+        # reasoning-model fallback: if no answer came, surface the thinking
+        final_text = "".join(pieces) or "".join(reasoning)
+        if not pieces and reasoning:
+            yield final_text
         yield InferResult(
-            text="".join(pieces),
+            text=final_text,
             tokens_in=tokens_in or max(1, len(request.prompt.split())),
             tokens_out=tokens_out or max(1, len(pieces)),
             seed=request.seed,
