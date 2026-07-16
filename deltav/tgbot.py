@@ -17,6 +17,7 @@ with rolling history; every answer carries its on-chain receipt.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -38,6 +39,7 @@ class TgBot:
     def __init__(self, token: str, gateway: str, allow: set[int] | None = None,
                  client: httpx.AsyncClient | None = None, api_key: str = ""):
         self.api = f"https://api.telegram.org/bot{token}"
+        self.file_api = f"https://api.telegram.org/file/bot{token}"
         self.gateway = gateway.rstrip("/")
         # dvk_ key -> the bot's requests are billed to that on-chain wallet
         self.gw_headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -98,6 +100,44 @@ class TgBot:
                   f" · {usage.get('completion_tokens', '?')} ток"
                   f" · чек {str(meta.get('receipt_tx'))[:8]}")
         return answer + footer
+
+    async def download_photo(self, file_id: str) -> str | None:
+        """Telegram photo file_id -> base64 data URI for vision models."""
+        info = await self.tg("getFile", file_id=file_id)
+        path = (info or {}).get("file_path")
+        if not path:
+            return None
+        try:
+            resp = await self.client.get(f"{self.file_api}/{path}", timeout=60.0)
+            resp.raise_for_status()
+        except httpx.HTTPError:
+            return None
+        mime = "image/jpeg" if path.lower().endswith((".jpg", ".jpeg")) else "image/png"
+        return f"data:{mime};base64," + base64.b64encode(resp.content).decode()
+
+    async def do_vision(self, chat_id: int, caption: str, image_uri: str) -> str:
+        """Send an image (+optional caption) to a vision model."""
+        prompt = caption.strip() or "Что на этом изображении? Опиши кратко."
+        resp = await self.client.post(f"{self.gateway}/v1/chat/completions",
+                                      headers=self.gw_headers, json={
+            "model": self.models.get(chat_id, "auto"),
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_uri}}]}],
+            "max_tokens": MAX_TOKENS,
+        })
+        if resp.status_code != 200:
+            detail = resp.json().get("detail", resp.text[:200])
+            return (f"⚠ {resp.status_code}: {detail}\n"
+                    "(нужна модель со зрением — сейчас служит "
+                    f"{self.models.get(chat_id, 'auto')})")
+        data = resp.json()
+        answer = data["choices"][0]["message"]["content"] or "(пусто)"
+        # keep vision turns in history as a text note so context survives
+        self.history(chat_id).append({"role": "user", "content": f"[прислал изображение] {prompt}"})
+        self.history(chat_id).append({"role": "assistant", "content": answer})
+        meta = data.get("deltav", {})
+        return answer + f"\n\n·  👁 {data.get('model','?').split('/')[-1].split('::')[0]} · чек {str(meta.get('receipt_tx'))[:8]}"
 
     async def do_agent(self, chat_id: int, task: str) -> str:
         resp = await self.client.post(f"{self.gateway}/v1/agents/run", headers=self.gw_headers, json={
@@ -161,9 +201,11 @@ class TgBot:
         return "\n".join(lines)
 
     HELP = (
-        "ΔV — децентрализованная AI-сеть.\n\n"
-        "Просто пишите — по умолчанию отвечает агент: сам ищет в интернете,"
-        " когда это нужно, помнит сессию (каждый ответ = чек в чейне).\n\n"
+        "ΔV — децентрализованная AI-сеть. Полноценный агент прямо в чате.\n\n"
+        "• Просто пишите — по умолчанию отвечает агент: сам ищет в интернете,"
+        " когда нужно, помнит сессию (каждый ответ = чек в чейне).\n"
+        "• Пришлите фото 🖼 — модель со зрением опишет/ответит по картинке"
+        " (подпись к фото = ваш вопрос).\n\n"
         "/fast — быстрый режим без инструментов\n"
         "/smart — вернуть агентский режим (по умолчанию)\n"
         "/agent <задача> — явный запуск агента\n"
@@ -190,11 +232,30 @@ class TgBot:
         msg = update.get("message") or {}
         chat_id = (msg.get("chat") or {}).get("id")
         user_id = (msg.get("from") or {}).get("id")
-        text = (msg.get("text") or "").strip()
-        if not chat_id or not text:
+        text = (msg.get("text") or msg.get("caption") or "").strip()
+        photo = msg.get("photo") or []
+        # image documents (sent as file) also count
+        doc = msg.get("document") or {}
+        if doc.get("mime_type", "").startswith("image/"):
+            photo = photo or [{"file_id": doc["file_id"]}]
+        if not chat_id or (not text and not photo):
             return
         if not self.allowed(user_id):
             await self.send(chat_id, "⛔ доступ по allowlist; ваш id: " + str(user_id))
+            return
+
+        # a photo -> vision (the served model must support images)
+        if photo:
+            async with self._locks[chat_id]:
+                await self.tg("sendChatAction", chat_id=chat_id, action="typing")
+                uri = await self.download_photo(photo[-1]["file_id"])  # largest size
+                if not uri:
+                    await self.send(chat_id, "⚠ не смог скачать изображение")
+                    return
+                try:
+                    await self.send(chat_id, await self.do_vision(chat_id, text, uri))
+                except httpx.HTTPError as exc:
+                    await self.send(chat_id, f"⚠ сеть недоступна: {exc}")
             return
 
         cmd, _, arg = text.partition(" ")

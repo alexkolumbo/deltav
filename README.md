@@ -72,8 +72,10 @@ curl http://<gw>:9000/api/chat \
   -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Recipes for goose / opencode / Open WebUI / OpenClaw / Hermes and the
-`deltav.client.DeltaVClient` SDK are in [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
+**Full guides**: [Hosting a node](docs/HOSTING.md) ([RU](docs/HOSTING.ru.md)) ·
+[Using as a client](docs/CLIENT.md) ([RU](docs/CLIENT.ru.md)) ·
+per-tool recipes and the `DeltaVClient` SDK in
+[docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
 ### Delta V's own client tools
 

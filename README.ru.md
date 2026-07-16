@@ -60,8 +60,9 @@ tool calling и биллингом, плюс формы **Ollama** и **Anthropi
 | Ollama | `http://<gw>:9000` | Open WebUI, LangChain-Ollama, десктоп-клиенты |
 | Anthropic | `http://<gw>:9000` | любой клиент на `anthropic`-SDK |
 
-Рецепты (goose / opencode / Open WebUI / Hermes / сворм / SDK) — в
-[docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
+**Полные руководства**: [Хостинг ноды](docs/HOSTING.ru.md) ([EN](docs/HOSTING.md)) ·
+[Использование как клиент](docs/CLIENT.ru.md) ([EN](docs/CLIENT.md)) ·
+рецепты по инструментам и SDK — в [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
 **Companion** (`deltav companion`, `/v1/companion/*`) — персональный агент
 с собственным слоем памяти и самоулучшением при **строгой изоляции

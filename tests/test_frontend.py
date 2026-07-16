@@ -25,13 +25,17 @@ async def test_gateway_serves_chat_ui():
     await client.aclose()
 
 
-def make_bot(routes: dict) -> tuple[TgBot, list]:
+def make_bot(routes: dict, tg_routes: dict | None = None) -> tuple[TgBot, list]:
     """Bot with a fake Telegram API + fake gateway; returns sent messages."""
     sent = []
+    tg_routes = tg_routes or {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         if "api.telegram.org" in url:
+            for suffix, respond in tg_routes.items():
+                if suffix in url:
+                    return respond(request)
             if url.endswith("/sendMessage"):
                 sent.append(json.loads(request.content))
             return httpx.Response(200, json={"ok": True, "result": []})
@@ -121,6 +125,59 @@ async def test_agent_command_uses_session_memory():
     bot, sent = make_bot({"/v1/agents/run": agent_route})
     await bot.handle(update("/agent найди что-нибудь"))
     assert "web_search" in sent[0]["text"] and "готово" in sent[0]["text"]
+
+
+async def test_bot_handles_photo_as_vision():
+    """A photo message -> downloaded from Telegram -> sent as vision."""
+    seen = {}
+
+    def vision_route(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        content = payload["messages"][0]["content"]
+        seen["is_vision"] = isinstance(content, list)
+        seen["has_image"] = any(b.get("type") == "image_url" for b in content)
+        seen["caption"] = content[0]["text"]
+        return httpx.Response(200, json={
+            "model": "m/vl::f", "choices": [{"message": {"content": "вижу красный квадрат"}}],
+            "deltav": {"receipt_tx": "vrx"}})
+
+    def get_file(request):
+        return httpx.Response(200, json={"ok": True, "result": {"file_path": "photos/1.jpg"}})
+
+    def download(request):
+        return httpx.Response(200, content=b"\xff\xd8\xffFAKEJPEG")  # bytes -> base64
+
+    bot, sent = make_bot(
+        {"/v1/chat/completions": vision_route},
+        tg_routes={"/getFile": get_file, "/file/bottok/photos/1.jpg": download})
+
+    photo_update = {"update_id": 5, "message": {
+        "chat": {"id": 7}, "from": {"id": 42},
+        "caption": "какой цвет?",
+        "photo": [{"file_id": "small"}, {"file_id": "big"}]}}  # largest last
+    await bot.handle(photo_update)
+
+    assert seen["is_vision"] and seen["has_image"]         # sent as a vision message
+    assert seen["caption"] == "какой цвет?"                # caption became the prompt
+    assert "красный квадрат" in sent[0]["text"]            # answer relayed to the user
+
+
+async def test_bot_photo_without_caption_uses_default_prompt():
+    def get_file(request):
+        return httpx.Response(200, json={"ok": True, "result": {"file_path": "p/2.png"}})
+
+    captured = {}
+
+    def vision_route(request):
+        captured["prompt"] = json.loads(request.content)["messages"][0]["content"][0]["text"]
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}], "deltav": {}})
+
+    bot, sent = make_bot(
+        {"/v1/chat/completions": vision_route},
+        tg_routes={"/getFile": get_file, "/file/bottok/p/2.png": lambda r: httpx.Response(200, content=b"PNG")})
+    await bot.handle({"update_id": 6, "message": {
+        "chat": {"id": 7}, "from": {"id": 42}, "photo": [{"file_id": "x"}]}})
+    assert "Опиши" in captured["prompt"] or "изображени" in captured["prompt"]
 
 
 def test_history_trimming():
