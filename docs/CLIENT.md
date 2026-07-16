@@ -60,26 +60,47 @@ deltav models / network / balance dv1… / send --to dv1… --amount 100
 
 ## 5. Telegram — from anywhere
 
-The bot **@DeltaV_ai_bot** works from any network:
-- Just type — the agent answers, searching the web when needed, and
-  remembers your conversation.
-- **Send a photo** 🖼 — a vision model describes it or answers your caption.
-- `/agent <task>`, `/models`, `/net`, `/plan`, `/fast`, `/reset`.
-
-## Billing — API keys are wallets
-
-An API key `dvk_…` is a custodial on-chain wallet. Fund its address and
-every request is paid from it; you never overpay (the price limit is
-signed per request).
+A network can run a **Telegram bot** so you can use it from any network
+(no LAN needed). If your host hasn't set one up, they can — it's a
+single standalone file (`deltav/tgbot.py`), long-polling, no inbound
+ports:
 
 ```bash
-# create a key (shown once) — then fund its address with DVT
-curl -X POST http://<gw>:9000/v1/keys
-deltav keys me --key dvk_…         # balance + usage
+# the host runs this (BotFather gives the token):
+TELEGRAM_BOT_TOKEN=… DELTAV_GATEWAY=http://<gw>:9000 \
+  DELTAV_ALLOW=<your-telegram-id> python -m deltav.cli tgbot
 ```
 
-Without a key, requests use the gateway's wallet (fine for private
-networks). Set `--require-keys` on the gateway to require funded keys.
+Then, in your bot: just type (the agent answers, searches the web when
+needed, remembers you); **send a photo** 🖼 to ask about an image;
+commands `/agent <task>`, `/models`, `/net`, `/plan`, `/fast`, `/reset`.
+
+## Getting an API key (billing)
+
+An API key `dvk_…` is a custodial on-chain wallet: fund its address once,
+and every request is paid from it. You can never overpay — the price
+limit is signed per request.
+
+**Do you even need one?** On a private / LAN network the gateway may pay
+from its own wallet (no key needed). You need a funded key when the
+gateway runs with `--require-keys`, or when you want your own billing.
+
+**How to get one** — any of:
+
+```bash
+# a) from the web app: open http://<gw>:9000/chat  (a key isn't required to try)
+# b) create one via the API (the key is shown ONCE — save it):
+curl -X POST http://<gw>:9000/v1/keys
+#    -> {"api_key":"dvk_…","address":"dv1…","note":"fund this address"}
+```
+
+Then **fund the key's address** with DVT — ask the network's host to send
+some to the `address` you got (they run `deltav send --to dv1… --amount 100`),
+or transfer from your own wallet. Check it:
+
+```bash
+deltav keys me --key dvk_…         # balance + usage
+```
 
 ## Quick test
 
