@@ -81,8 +81,15 @@ Recipes for goose / opencode / Open WebUI / OpenClaw / Hermes and the
 deltav connect --url http://gw1:9000,http://gw2:9000 --key dvk_… --model auto
 deltav repl                     # interactive streaming chat; /agent /swarm /model
 deltav swarm "compare two approaches" --mode vote -n 3   # fan across models/nodes
+deltav companion                # persistent per-user agent with memory + self-improvement
 deltav chat "Explain delta-v"   # one-shot
 ```
+
+**Companion** is a stateful agent with a personal memory layer and
+self-improvement, under **strict per-user isolation** — identity comes
+from your key, so no user can ever reach another's memory. It recalls your
+past facts/learnings each turn and reflects to store new ones, so even
+small models get better per user over time (`/v1/companion/*`).
 
 ## Model planner
 

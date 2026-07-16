@@ -494,6 +494,51 @@ def _cmd_repl(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_companion(args: argparse.Namespace) -> int:
+    from .client import DeltaVClient, load_profile
+
+    profile = load_profile()
+    urls = [args.gateway] if args.gateway else profile.base_urls
+    client = DeltaVClient(base_urls=urls, api_key=args.key or profile.api_key,
+                          model=args.model or profile.model)
+    history: list[dict] = []
+    if args.feedback:
+        d = client.companion_feedback(args.feedback)
+        print(f"запомнено как обратная связь ({d['stored']}) для {d['user']}")
+        return 0
+    print("ΔV Companion — персональный агент. Помнит вас между сессиями.")
+    print("  /memory — что я о вас помню · /feedback <текст> · /exit")
+    while True:
+        try:
+            text = input("\nвы: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(); break
+        if not text:
+            continue
+        if text in ("/exit", "/quit"):
+            break
+        if text == "/memory":
+            m = client.companion_memory()
+            print(f"  ({m['user']}, {'ключ' if m['authenticated'] else 'локально'})")
+            for it in m["items"][-15:]:
+                kind = it.get("meta", {}).get("kind", "note")
+                print(f"  · [{kind}] {it['text'][:90]}")
+            continue
+        if text.startswith("/feedback "):
+            client.companion_feedback(text[len("/feedback "):])
+            print("  учту это на будущее.")
+            continue
+        d = client.companion(text, history=history)
+        for s in d.get("steps", []):
+            print(f"  🛠 {s['tool']}({s['arguments']})")
+        print("ΔV:", d["answer"])
+        if d.get("learned"):
+            print(f"  💡 запомнил: {d['learned']}")
+        history.append({"role": "user", "content": text})
+        history.append({"role": "assistant", "content": d["answer"]})
+    return 0
+
+
 def _cmd_swarm(args: argparse.Namespace) -> int:
     from .client import DeltaVClient, load_profile
 
@@ -709,6 +754,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_repl.add_argument("--model", default="")
     p_repl.add_argument("--max-tokens", type=int, default=800)
     p_repl.set_defaults(func=_cmd_repl)
+
+    p_comp = sub.add_parser("companion", help="persistent per-user agent with memory")
+    p_comp.add_argument("--gateway", default="")
+    p_comp.add_argument("--key", default="", help="your dvk_ key = your identity + memory")
+    p_comp.add_argument("--model", default="")
+    p_comp.add_argument("--feedback", default="", help="store one feedback note and exit")
+    p_comp.set_defaults(func=_cmd_companion)
 
     p_swarm = sub.add_parser("swarm", help="fan a task across several models/nodes in parallel")
     p_swarm.add_argument("task")

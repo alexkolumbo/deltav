@@ -162,6 +162,24 @@ Each worker routes independently, so work spreads across live nodes. The
 response has `workers[]` (model, node, answer, receipt) and a synthesized
 `answer` for vote mode.
 
+## Companion — a persistent per-user agent
+
+A stateful agent with a **personal memory layer** and **self-improvement**,
+with **strict per-user isolation**: identity comes from your key, never
+from the request body, so one user can never reach another's memory.
+
+```bash
+POST /v1/companion/chat     {"message": "..."}   # per-user, remembers you
+POST /v1/companion/feedback {"note": "be concise"}   # a durable learning
+GET  /v1/companion/memory                          # only YOUR memory
+deltav companion            # interactive; /memory, /feedback <text>
+```
+
+Each turn recalls your relevant memory + learnings, runs the ReAct loop
+(tools available), and reflects to store what it learned — so with small
+models it still gets better per user over time. Requests are billed to
+your `dvk_` key; the key's wallet address is your isolation identity.
+
 ## Your own client and REPL
 
 ```bash

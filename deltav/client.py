@@ -119,6 +119,18 @@ class DeltaVClient:
             body["models"] = models
         return self._request("POST", "/v1/swarm", json=body).json()
 
+    def companion(self, message: str, history: list[dict] | None = None, **kw) -> dict:
+        body = {"message": message, "model": self.model, **kw}
+        if history:
+            body["history"] = history
+        return self._request("POST", "/v1/companion/chat", json=body).json()
+
+    def companion_feedback(self, note: str) -> dict:
+        return self._request("POST", "/v1/companion/feedback", json={"note": note}).json()
+
+    def companion_memory(self) -> dict:
+        return self._request("GET", "/v1/companion/memory").json()
+
     def embed(self, texts: list[str], model: str = "auto") -> list[list[float]]:
         body = {"input": texts, "model": model}
         data = self._request("POST", "/v1/embeddings", json=body).json()

@@ -41,6 +41,7 @@ from ..overlay import (
     strip_tool_calls,
     to_openai_tool_calls,
 )
+from ..companion import CompanionAgent, UserMemory, resolve_identity
 from ..overlay.memory import VectorMemory
 from ..overlay.tools import ToolSpec
 from ..router import Catalog, RouteError, SmartRouter
@@ -424,6 +425,72 @@ class GatewayDaemon:
                 ],
                 "tools_available": registry.names(),
             }
+
+        @app.post("/v1/companion/chat")
+        async def companion_chat(body: dict, request: Request) -> dict:
+            """Persistent, per-user, self-improving agent. The user's identity
+            comes from their key — memory is strictly isolated per user."""
+            payer, record = await self._requester_from(request)
+            message = (body.get("message") or "").strip()
+            if not message:
+                raise HTTPException(400, "message required")
+            identity = resolve_identity(
+                address=record.address if record else "",
+                fallback_user=body.get("user_id", ""))
+            memory = UserMemory(self.memory, identity)
+            await self.router.refresh(self.node_urls)
+            await self._precheck_funds(record, message, int(body.get("max_tokens", 512)) * 3)
+
+            async def complete(prompt: str):
+                r = await self.router.route(prompt=prompt, model=body.get("model", "auto"),
+                                            max_tokens=int(body.get("max_tokens", 512)),
+                                            requester=payer)
+                if record is not None:
+                    used = r.tokens_in + r.tokens_out
+                    self.keys.record_usage(record, used, used * self.params.price_per_token)
+                return r.text, {"node": r.node, "receipt_tx": r.receipt_tx}
+
+            agent = CompanionAgent(complete, self.tools,
+                                   max_steps=min(int(body.get("max_steps", 6)), 12),
+                                   reflect=body.get("reflect", True))
+            try:
+                result = await agent.run(memory, message, body.get("history"))
+            except RouteError as exc:
+                raise HTTPException(503, str(exc))
+            return {
+                "answer": result.answer,
+                "user": identity.user_id,
+                "authenticated": identity.authenticated,
+                "memory_used": result.memory_used,
+                "learned": result.learned,
+                "model_calls": result.model_calls,
+                "steps": [{"tool": s.tool, "arguments": s.arguments,
+                           "result": s.result[:800], "receipt_tx": s.receipt_tx}
+                          for s in result.steps],
+            }
+
+        @app.post("/v1/companion/feedback")
+        async def companion_feedback(body: dict, request: Request) -> dict:
+            _, record = await self._requester_from(request)
+            note = (body.get("note") or "").strip()
+            if not note:
+                raise HTTPException(400, "note required")
+            identity = resolve_identity(record.address if record else "",
+                                        body.get("user_id", ""))
+            memory = UserMemory(self.memory, identity)
+            item = await CompanionAgent(None, self.tools).feedback(memory, note)
+            return {"stored": item["id"], "user": identity.user_id}
+
+        @app.get("/v1/companion/memory")
+        async def companion_memory(request: Request) -> dict:
+            """A user sees only their OWN memory — identity from the key."""
+            _, record = await self._requester_from(request)
+            identity = resolve_identity(record.address if record else "")
+            memory = UserMemory(self.memory, identity)
+            items = [{k: v for k, v in it.items() if k != "vec"}
+                     for it in memory.all_items()]
+            return {"user": identity.user_id, "authenticated": identity.authenticated,
+                    "items": items}
 
         @app.post("/v1/swarm")
         async def swarm(body: dict, request: Request) -> dict:
