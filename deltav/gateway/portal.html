@@ -3,161 +3,248 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Delta V — network portal</title>
+<title>Delta V — Explorer & Analytics</title>
 <style>
   :root{
-    --bg:#0b0d10; --panel:#12151a; --panel2:#171b22; --line:#232833;
-    --ink:#e8ecf2; --dim:#8a93a3; --accent:#ff7a1a; --ok:#39d98a; --warn:#ffcc4d; --bad:#ff5c5c;
+    --bg:#08090c; --panel:#0f1116; --panel2:#151823; --line:#20242f;
+    --ink:#eef1f6; --dim:#828b9c; --dim2:#5a6274;
+    --accent:#ff7a1a; --accent2:#ffb26b; --ok:#2fd583; --warn:#ffcc4d; --bad:#ff5c5c;
     --mono:"SFMono-Regular",ui-monospace,Menlo,Consolas,monospace;
   }
   *{box-sizing:border-box}
+  html{scrollbar-color:#2a2f3d var(--bg)}
   body{margin:0;background:var(--bg);color:var(--ink);
-    font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
-  a{color:var(--accent);text-decoration:none}
-  a:hover{text-decoration:underline}
-  header{position:sticky;top:0;z-index:10;background:rgba(11,13,16,.9);
-    backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-  .bar{max-width:1120px;margin:0 auto;display:flex;align-items:center;gap:18px;padding:12px 18px}
-  .logo{font-weight:700;font-size:19px;letter-spacing:.3px}
+    font:14.5px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+  button{font:inherit;cursor:pointer}
+  header{position:sticky;top:0;z-index:20;background:rgba(8,9,12,.92);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 18px}
+  .hrow{display:flex;align-items:center;gap:14px;padding:11px 0;flex-wrap:wrap}
+  .logo{font-weight:800;font-size:19px;white-space:nowrap}
   .logo b{color:var(--accent)}
-  nav{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
-  nav button{background:transparent;border:0;color:var(--dim);font:inherit;font-weight:600;
-    padding:7px 12px;border-radius:8px;cursor:pointer}
-  nav button:hover{color:var(--ink);background:var(--panel)}
-  nav button.on{color:var(--ink);background:var(--panel2);box-shadow:inset 0 -2px 0 var(--accent)}
-  main{max-width:1120px;margin:0 auto;padding:22px 18px 60px}
-  .tab{display:none}
-  .tab.on{display:block;animation:f .2s ease}
+  .logo .tag{font-size:11px;font-weight:700;background:var(--ink);color:var(--bg);
+    border-radius:5px;padding:1px 7px;margin-left:7px;font-style:italic}
+  .search{flex:1;min-width:220px;display:flex;align-items:center;gap:8px;
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px}
+  .search svg{flex:none;opacity:.5}
+  .search input{flex:1;background:none;border:0;outline:0;color:var(--ink);font:inherit;min-width:0}
+  .lang{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  .lang button{background:none;border:0;color:var(--dim);padding:6px 10px;font-weight:700;font-size:12px}
+  .lang button.on{background:var(--panel2);color:var(--ink)}
+  .strip{display:flex;gap:16px;align-items:center;padding:7px 0 10px;flex-wrap:wrap;
+    font-family:var(--mono);font-size:12.5px;color:var(--dim)}
+  .strip b{color:var(--ink);font-weight:600}
+  .strip .live{width:7px;height:7px;border-radius:50%;background:var(--ok);
+    box-shadow:0 0 7px var(--ok);display:inline-block;margin-right:5px}
+  nav.tabs{display:flex;gap:2px;overflow-x:auto}
+  nav.tabs button{background:none;border:0;color:var(--dim);font-weight:600;padding:9px 13px;
+    border-radius:9px 9px 0 0;white-space:nowrap}
+  nav.tabs button:hover{color:var(--ink)}
+  nav.tabs button.on{color:var(--ink);box-shadow:inset 0 -2px 0 var(--accent)}
+  main{max-width:1180px;margin:0 auto;padding:20px 18px 70px}
+  .tab{display:none}.tab.on{display:block;animation:f .18s ease}
   @keyframes f{from{opacity:0;transform:translateY(4px)}to{opacity:1}}
-  h2{font-size:15px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:26px 0 12px}
-  .hero{display:flex;flex-direction:column;gap:6px;padding:8px 0 4px}
-  .hero h1{margin:0;font-size:30px}
-  .hero .sub{color:var(--dim)}
-  .pill{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;
-    background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:3px 10px;color:var(--dim)}
-  .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);margin:26px 0 10px;
+     display:flex;align-items:center;justify-content:space-between}
+  h2 .more{font-size:12px;text-transform:none;letter-spacing:0}
   .grid{display:grid;gap:12px}
-  .stats{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
-  .stat .k{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
-  .stat .v{font-size:26px;font-weight:700;margin-top:2px}
-  .stat .v small{font-size:13px;color:var(--dim);font-weight:500}
-  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
-  .chip{font-family:var(--mono);font-size:12px;background:var(--panel2);border:1px solid var(--line);
-    border-radius:7px;padding:3px 8px}
-  .links{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
-  .btn{display:inline-block;background:var(--accent);color:#160a00;font-weight:700;padding:9px 15px;
-    border-radius:10px}
-  .btn.ghost{background:var(--panel2);color:var(--ink);border:1px solid var(--line)}
-  table{width:100%;border-collapse:collapse;font-size:13.5px}
-  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
-  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
-  th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+  .cards4{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+  .cols2{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:15px 17px;min-width:0}
+  .stat .k{color:var(--dim);font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;font-weight:600}
+  .stat .v{font-size:29px;font-weight:800;margin:3px 0 1px;font-variant-numeric:tabular-nums}
+  .stat .v small{font-size:13px;color:var(--dim);font-weight:600}
+  .delta{font-size:12.5px;font-weight:600}
+  .delta.up{color:var(--ok)} .delta.down{color:var(--bad)} .delta.flat{color:var(--dim)}
+  .spark{width:100%;height:44px;margin-top:8px;display:block}
+  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--dim2);font-weight:700;font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
+     position:sticky;top:0;background:var(--panel)}
   tr:last-child td{border-bottom:0}
-  td.mono,.mono{font-family:var(--mono);font-size:12.5px}
-  .badge{font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;text-transform:uppercase;letter-spacing:.03em}
-  .b-direct{background:rgba(57,217,138,.14);color:var(--ok)}
-  .b-relay{background:rgba(255,122,26,.16);color:var(--accent)}
-  .b-relayhost{background:rgba(255,204,77,.16);color:var(--warn)}
-  .b-off{background:rgba(255,92,92,.14);color:var(--bad)}
-  .loadbar{height:6px;background:var(--panel2);border-radius:4px;overflow:hidden;min-width:70px}
-  .loadbar span{display:block;height:100%;background:linear-gradient(90deg,var(--ok),var(--warn),var(--bad))}
-  .nodecard{display:flex;flex-direction:column;gap:8px}
-  .nodecard .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
-  .kv{display:flex;justify-content:space-between;font-size:12.5px;color:var(--dim)}
-  .kv b{color:var(--ink);font-weight:600}
-  .seg{display:flex;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:3px;width:fit-content}
-  .seg button{background:transparent;border:0;color:var(--dim);font:inherit;font-weight:600;padding:5px 11px;border-radius:6px;cursor:pointer}
-  .seg button.on{background:var(--accent);color:#160a00}
-  pre{background:#0f1216;border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow-x:auto;
-    font-family:var(--mono);font-size:12.5px;margin:8px 0;position:relative}
-  .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--line);color:var(--dim);
-    font:inherit;font-size:11px;padding:3px 8px;border-radius:6px;cursor:pointer}
-  .copy:hover{color:var(--ink)}
-  .muted{color:var(--dim)}
+  tbody tr.click{cursor:pointer} tbody tr.click:hover{background:var(--panel2)}
+  .mono{font-family:var(--mono);font-size:12px}
+  .num{font-variant-numeric:tabular-nums}
+  .badge{font-size:10.5px;font-weight:800;padding:2.5px 8px;border-radius:6px;
+    text-transform:uppercase;letter-spacing:.04em;display:inline-block}
+  .b-ok{background:rgba(47,213,131,.13);color:var(--ok)}
+  .b-bad{background:rgba(255,92,92,.13);color:var(--bad)}
+  .b-warn{background:rgba(255,204,77,.13);color:var(--warn)}
+  .b-acc{background:rgba(255,122,26,.14);color:var(--accent)}
+  .b-dim{background:var(--panel2);color:var(--dim)}
+  .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:1px}
+  .dot.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+  .dot.off{background:var(--bad)}
+  .loadbar{height:5px;background:var(--panel2);border-radius:4px;overflow:hidden;min-width:64px}
+  .loadbar i{display:block;height:100%;background:linear-gradient(90deg,var(--ok),var(--warn),var(--bad))}
+  .wbar{display:flex;align-items:center;gap:10px;margin:7px 0}
+  .wbar .addr{width:150px;flex:none}
+  .wbar .track{flex:1;height:9px;background:var(--panel2);border-radius:5px;overflow:hidden}
+  .wbar .track i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:5px}
+  .wbar .pct{width:58px;text-align:right;flex:none;font-weight:700}
+  .chartbox{height:180px;position:relative}
+  .chartbox svg{width:100%;height:100%;display:block}
+  .legend{display:flex;gap:16px;font-size:12px;color:var(--dim);margin-top:6px}
+  .legend i{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:5px;vertical-align:-1px}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-  label.sw{display:inline-flex;align-items:center;gap:7px;color:var(--dim);font-size:13px;cursor:pointer}
-  .empty{color:var(--dim);padding:18px;text-align:center}
+  .btn{display:inline-block;background:var(--accent);color:#160a00;font-weight:800;padding:9px 16px;border-radius:10px;border:0}
+  .btn.ghost{background:var(--panel2);color:var(--ink);border:1px solid var(--line)}
+  .seg{display:flex;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:3px;width:fit-content}
+  .seg button{background:none;border:0;color:var(--dim);font-weight:700;padding:6px 12px;border-radius:7px}
+  .seg button.on{background:var(--accent);color:#160a00}
+  pre{background:#0b0d12;border:1px solid var(--line);border-radius:11px;padding:13px 15px;overflow-x:auto;
+    font-family:var(--mono);font-size:12.5px;margin:10px 0;position:relative}
+  .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--line);
+    color:var(--dim);font-size:11px;padding:3px 9px;border-radius:6px}
+  .copy:hover{color:var(--ink)}
+  .muted{color:var(--dim)} .small{font-size:12px}
+  .empty{color:var(--dim);padding:22px;text-align:center}
+  .kv{display:flex;justify-content:space-between;gap:14px;font-size:13px;padding:5px 0;border-bottom:1px dashed var(--line)}
+  .kv:last-child{border-bottom:0}
+  .kv span{color:var(--dim)} .kv b{font-weight:600;text-align:right;word-break:break-all}
+  /* detail drawer */
+  #drawer{position:fixed;inset:0;z-index:50;display:none}
+  #drawer.on{display:block}
+  #drawer .veil{position:absolute;inset:0;background:rgba(0,0,0,.55)}
+  #drawer .panel{position:absolute;top:0;right:0;bottom:0;width:min(480px,94vw);background:var(--panel);
+    border-left:1px solid var(--line);padding:20px;overflow-y:auto}
+  #drawer h3{margin:2px 0 14px;font-size:16px;display:flex;justify-content:space-between;align-items:center}
+  #drawer .x{background:var(--panel2);border:1px solid var(--line);color:var(--dim);border-radius:8px;padding:4px 11px}
+  .hero{padding:6px 0 2px}
+  .hero h1{margin:0 0 4px;font-size:26px}
+  .hero .sub{color:var(--dim)}
+  footer{border-top:1px solid var(--line);margin-top:40px}
+  footer .wrap{padding:18px;color:var(--dim2);font-size:12.5px;display:flex;gap:18px;flex-wrap:wrap}
+  @media (max-width:640px){ .stat .v{font-size:24px} .wbar .addr{width:105px} }
 </style>
 </head>
 <body>
 <header>
-  <div class="bar">
-    <div class="logo"><b>Δ</b>V <span class="muted" style="font-weight:500">network</span></div>
-    <nav id="nav">
-      <button data-tab="overview" class="on">Overview</button>
-      <button data-tab="explorer">Explorer</button>
-      <button data-tab="monitor">Monitor</button>
-      <button data-tab="run">Run a node</button>
-      <button data-tab="connect">Connect</button>
+  <div class="wrap">
+    <div class="hrow">
+      <div class="logo"><b>Δ</b>V<span class="tag">explorer</span></div>
+      <div class="search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <input id="q" placeholder="" autocomplete="off">
+      </div>
+      <div class="lang"><button data-lang="en" class="on">EN</button><button data-lang="ru">RU</button></div>
+    </div>
+    <div class="strip">
+      <span><span class="live" id="livedot"></span><b id="s-chain">…</b></span>
+      <span data-t="epoch">Epoch</span><b id="s-epoch">—</b>
+      <span data-t="nextin">next in</span><b id="s-next" class="num">—</b>
+      <span data-t="height">height</span><b id="s-height" class="num">—</b>
+      <span data-t="price">price</span><b id="s-price">—</b>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button data-tab="overview" class="on" data-t="t_overview">Overview</button>
+      <button data-tab="explorer" data-t="t_explorer">Explorer</button>
+      <button data-tab="nodes" data-t="t_nodes">Nodes</button>
+      <button data-tab="run" data-t="t_run">Run a node</button>
+      <button data-tab="connect" data-t="t_connect">Connect</button>
     </nav>
   </div>
 </header>
+
 <main>
-
-  <!-- OVERVIEW -->
+  <!-- ============ OVERVIEW ============ -->
   <section class="tab on" id="tab-overview">
-    <div class="hero">
-      <div class="row"><span class="pill"><span class="dot" id="livedot"></span><span id="chainid">…</span></span></div>
-      <h1>A decentralized AI network you can watch, join and use.</h1>
-      <div class="sub">Open-source models routed across GPU nodes, paid per token on-chain, honesty spot-checked.</div>
+    <div class="grid cards4" id="ovcards"></div>
+
+    <h2><span data-t="req_over_time">AI requests over time</span></h2>
+    <div class="card"><div class="chartbox" id="reqchart"></div>
+      <div class="legend"><span><i style="background:var(--ok)"></i><span data-t="validated">Validated</span></span>
+      <span><i style="background:var(--bad)"></i><span data-t="failed">Failed</span></span>
+      <span><i style="background:var(--dim2)"></i><span data-t="unchecked">Awaiting check</span></span></div>
     </div>
-    <div class="grid stats" id="ovstats"></div>
-    <h2>Models live on the network</h2>
-    <div class="chips" id="ovmodels"><span class="muted">loading…</span></div>
-    <div class="links">
-      <a class="btn" href="/chat">Open chat →</a>
-      <a class="btn ghost" data-goto="run">Run a node</a>
-      <a class="btn ghost" data-goto="connect">Connect a client</a>
-      <a class="btn ghost" href="/metrics">/metrics</a>
+
+    <div class="grid cols2">
+      <div>
+        <h2><span data-t="top_models">Top models</span></h2>
+        <div class="scroll"><table id="modelstbl"><thead><tr>
+          <th>#</th><th data-t="model">Model</th><th data-t="requests">Requests</th>
+          <th data-t="tokens">Tokens</th><th data-t="share">Share</th><th data-t="serving">Serving</th>
+        </tr></thead><tbody></tbody></table></div>
+      </div>
+      <div>
+        <h2><span data-t="by_weight">Nodes by weight</span></h2>
+        <div class="card" id="weights"></div>
+      </div>
+    </div>
+
+    <div class="grid cols2">
+      <div>
+        <h2><span data-t="latest_txs">Transactions</span><a class="more" href="#explorer" data-goto="explorer" data-t="view_all">View all →</a></h2>
+        <div class="scroll"><table id="ovtxs"><thead><tr>
+          <th data-t="type">Type</th><th data-t="details">Details</th><th data-t="time">Time</th>
+        </tr></thead><tbody></tbody></table></div>
+      </div>
+      <div>
+        <h2><span data-t="latest_blocks">Blocks</span><a class="more" href="#explorer" data-goto="explorer" data-t="view_all">View all →</a></h2>
+        <div class="scroll"><table id="ovblocks"><thead><tr>
+          <th data-t="block">Block</th><th>TXS</th><th data-t="proposer">Proposer</th><th data-t="time">Time</th>
+        </tr></thead><tbody></tbody></table></div>
+      </div>
     </div>
   </section>
 
-  <!-- EXPLORER -->
+  <!-- ============ EXPLORER ============ -->
   <section class="tab" id="tab-explorer">
-    <h2>Recent blocks</h2>
+    <div id="searchout"></div>
+    <h2><span data-t="latest_blocks">Blocks</span></h2>
     <div class="scroll"><table id="blocks"><thead><tr>
-      <th>Height</th><th>Proposer</th><th>Txs</th><th>Hash</th></tr></thead><tbody></tbody></table></div>
-    <h2>Recent inference receipts</h2>
+      <th data-t="height_c">Height</th><th data-t="time">Time</th><th data-t="proposer">Proposer</th>
+      <th>Slot</th><th>TXS</th><th data-t="hash">Hash</th>
+    </tr></thead><tbody></tbody></table></div>
+    <h2><span data-t="latest_receipts">Inference receipts</span></h2>
     <div class="scroll"><table id="receipts"><thead><tr>
-      <th>Node</th><th>Model</th><th>Tokens</th><th>Paid</th><th>Check</th></tr></thead><tbody></tbody></table></div>
-    <h2>Nodes &amp; connectivity</h2>
-    <div class="scroll"><table id="expnodes"><thead><tr>
-      <th>Node</th><th>Conn</th><th>Device</th><th>Models</th><th>Rep</th><th>Price</th><th>State</th></tr></thead><tbody></tbody></table></div>
+      <th data-t="receipt">Receipt</th><th data-t="node">Node</th><th data-t="model">Model</th>
+      <th data-t="tokens">Tokens</th><th data-t="paid">Paid</th><th data-t="check">Check</th><th data-t="height_c">Height</th>
+    </tr></thead><tbody></tbody></table></div>
+    <h2><span data-t="latest_txs">Transactions</span></h2>
+    <div class="scroll"><table id="txs"><thead><tr>
+      <th data-t="type">Type</th><th data-t="sender">Sender</th><th data-t="details">Details</th>
+      <th data-t="height_c">Height</th><th data-t="time">Time</th>
+    </tr></thead><tbody></tbody></table></div>
   </section>
 
-  <!-- MONITOR -->
-  <section class="tab" id="tab-monitor">
-    <div class="row" style="justify-content:space-between">
-      <h2 style="margin:8px 0">Live node health</h2>
-      <label class="sw"><input type="checkbox" id="auto" checked> auto-refresh (5s)</label>
-    </div>
-    <div class="grid stats" id="monagg"></div>
-    <div class="grid" id="moncards" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));margin-top:12px"></div>
+  <!-- ============ NODES ============ -->
+  <section class="tab" id="tab-nodes">
+    <div class="grid cards4" id="nodesum"></div>
+    <h2><span data-t="participants">Network participants</span><label class="small muted"><input type="checkbox" id="auto" checked> <span data-t="autorefresh">auto-refresh 8s</span></label></h2>
+    <div class="scroll"><table id="nodestbl"><thead><tr>
+      <th data-t="participant">Participant</th><th data-t="hardware">Hardware</th>
+      <th data-t="weight">Weight</th><th data-t="load">Load</th>
+      <th data-t="valid">Valid</th><th data-t="invalid">Invalid</th><th>Inv %</th>
+      <th data-t="tokens">Tokens</th><th data-t="earned">Earned</th><th data-t="price_c">Price</th>
+      <th data-t="lastseen">Last seen</th>
+    </tr></thead><tbody></tbody></table></div>
   </section>
 
-  <!-- RUN A NODE -->
+  <!-- ============ RUN A NODE ============ -->
   <section class="tab" id="tab-run">
-    <div class="hero"><h1>Run a node — earn DVT for serving inference</h1>
-      <div class="sub" id="runhint">A bilingual wizard takes a bare machine to a live, earning node. No manual networking — external access is automatic.</div></div>
-    <div class="seg" id="osseg">
+    <div class="hero"><h1 data-t="run_h">Run a node — earn DVT for serving inference</h1>
+      <div class="sub" data-t="run_sub">A bilingual wizard takes a bare machine to a live, earning node. External access is automatic — direct if reachable, else through a relay. No port-forwarding.</div></div>
+    <div class="seg" id="osseg" style="margin-top:12px">
       <button data-os="linux" class="on">Linux / macOS</button>
       <button data-os="win">Windows</button>
-      <button data-os="py">Have Python</button>
+      <button data-os="py" data-t="have_python">Have Python</button>
     </div>
     <div id="oscmd"></div>
     <div class="card" style="margin-top:12px">
-      <div class="kv"><span>External access</span><b>automatic (direct or relay, zero port-forward)</b></div>
-      <div class="kv"><span>Pricing</span><b>electricity + 50% margin — <span class="mono">deltav price</span></b></div>
-      <div class="kv"><span>Full guide</span><b><a href="https://github.com/alexkolumbo/deltav/blob/main/docs/HOSTING.md">HOSTING.md</a> · <a href="https://github.com/alexkolumbo/deltav/blob/main/docs/HOSTING.ru.md">RU</a></b></div>
+      <div class="kv"><span data-t="ext_access">External access</span><b data-t="ext_auto">automatic (direct or relay, zero port-forward)</b></div>
+      <div class="kv"><span data-t="pricing">Pricing</span><b><span data-t="pricing_v">electricity + 50% margin —</span> <span class="mono">deltav price</span></b></div>
+      <div class="kv"><span data-t="full_guide">Full guide</span><b><a href="https://github.com/alexkolumbo/deltav/blob/main/docs/HOSTING.md">HOSTING.md</a> · <a href="https://github.com/alexkolumbo/deltav/blob/main/docs/HOSTING.ru.md">RU</a></b></div>
     </div>
   </section>
 
-  <!-- CONNECT -->
+  <!-- ============ CONNECT ============ -->
   <section class="tab" id="tab-connect">
-    <div class="hero"><h1>Connect a client</h1>
-      <div class="sub">Point any OpenAI / Ollama / Anthropic tool at this gateway. Model is always <span class="mono">auto</span>.</div></div>
-    <div class="seg" id="toolseg">
+    <div class="hero"><h1 data-t="conn_h">Connect a client</h1>
+      <div class="sub" data-t="conn_sub">Point any OpenAI / Ollama / Anthropic tool at this gateway. Model is always <b>auto</b>.</div></div>
+    <div class="seg" id="toolseg" style="margin-top:12px">
       <button data-tool="web" class="on">Web</button>
       <button data-tool="openai">OpenAI</button>
       <button data-tool="ollama">Ollama</button>
@@ -166,135 +253,367 @@
     </div>
     <div id="toolbody"></div>
     <div class="card" style="margin-top:12px">
-      <div class="kv"><span>Need a key?</span><b>optional on LAN — <span class="mono">POST /v1/keys</span> mints a dvk_ wallet</b></div>
-      <div class="kv"><span>Full guide</span><b><a href="https://github.com/alexkolumbo/deltav/blob/main/docs/CLIENT.md">CLIENT.md</a> · <a href="https://github.com/alexkolumbo/deltav/blob/main/docs/CLIENT.ru.md">RU</a></b></div>
+      <div class="kv"><span data-t="need_key">Need a key?</span><b><span data-t="need_key_v">optional on LAN —</span> <span class="mono">POST /v1/keys</span></b></div>
+      <div class="kv"><span data-t="full_guide">Full guide</span><b><a href="https://github.com/alexkolumbo/deltav/blob/main/docs/CLIENT.md">CLIENT.md</a> · <a href="https://github.com/alexkolumbo/deltav/blob/main/docs/CLIENT.ru.md">RU</a></b></div>
     </div>
   </section>
-
 </main>
+
+<!-- detail drawer -->
+<div id="drawer"><div class="veil"></div><div class="panel"><h3><span id="dtitle">—</span><button class="x" id="dclose">✕</button></h3><div id="dbody"></div></div></div>
+
+<footer><div class="wrap">
+  <span><b style="color:var(--ink)">Δ</b>V — <span data-t="foot">decentralized AI network: explorer & analytics</span></span>
+  <a href="/chat">/chat</a><a href="/metrics">/metrics</a>
+  <a href="https://github.com/alexkolumbo/deltav">GitHub</a>
+</div></footer>
+
 <script>
+/* ============================ i18n ============================ */
+const I18N={
+en:{search_ph:"Search by address / block / hash / model",epoch:"Epoch",nextin:"next in",height:"height",price:"price",
+ t_overview:"Overview",t_explorer:"Explorer",t_nodes:"Nodes",t_run:"Run a node",t_connect:"Connect",
+ req_over_time:"AI requests over time",validated:"Validated",failed:"Failed",unchecked:"Awaiting check",
+ top_models:"Top models",by_weight:"Nodes by weight",latest_txs:"Transactions",latest_blocks:"Blocks",
+ latest_receipts:"Inference receipts",view_all:"View all →",model:"Model",requests:"Requests",tokens:"Tokens",
+ share:"Share",serving:"Serving",type:"Type",details:"Details",time:"Time",block:"Block",proposer:"Proposer",
+ height_c:"Height",hash:"Hash",receipt:"Receipt",node:"Node",paid:"Paid",check:"Check",sender:"Sender",
+ participants:"Network participants",participant:"Participant",hardware:"Hardware",weight:"Weight",load:"Load",
+ valid:"Valid",invalid:"Invalid",earned:"Earned",price_c:"Price",lastseen:"Last seen",autorefresh:"auto-refresh 8s",
+ run_h:"Run a node — earn DVT for serving inference",
+ run_sub:"A bilingual wizard takes a bare machine to a live, earning node. External access is automatic — direct if reachable, else through a relay. No port-forwarding.",
+ have_python:"Have Python",ext_access:"External access",ext_auto:"automatic (direct or relay, zero port-forward)",
+ pricing:"Pricing",pricing_v:"electricity + 50% margin —",full_guide:"Full guide",
+ conn_h:"Connect a client",conn_sub:"Point any OpenAI / Ollama / Anthropic tool at this gateway. Model is always auto.",
+ need_key:"Need a key?",need_key_v:"optional on LAN —",foot:"decentralized AI network: explorer & analytics",
+ tokens_served:"AI tokens",dvt_paid:"DVT paid",nodes_online:"Nodes online",checks_ok:"Check pass rate",
+ vs_prev:"vs prev window",ago:"ago",just_now:"just now",online:"online",offline:"offline",jailed:"jailed",
+ relay_host:"relay host",via_relay:"via relay",direct:"direct",open_chat:"Open chat →",no_data:"no data yet",
+ not_found:"Nothing found",blk:"Block",addr:"Address",balance:"Balance",stake:"Stake",nonce:"Nonce",
+ node_receipts:"Recent receipts by this node",txs_in_block:"Transactions",reward:"reward",active_j:"jobs",
+ sum_active:"Active",sum_total:"Registered",sum_relays:"Relays",sum_jailed:"Jailed"},
+ru:{search_ph:"Поиск: адрес / блок / хэш / модель",epoch:"Эпоха",nextin:"до следующей",height:"высота",price:"цена",
+ t_overview:"Обзор",t_explorer:"Эксплорер",t_nodes:"Узлы",t_run:"Запустить узел",t_connect:"Подключиться",
+ req_over_time:"AI-запросы во времени",validated:"Проверено",failed:"Провалено",unchecked:"Ждёт проверки",
+ top_models:"Топ моделей",by_weight:"Узлы по весу",latest_txs:"Транзакции",latest_blocks:"Блоки",
+ latest_receipts:"Чеки инференса",view_all:"Все →",model:"Модель",requests:"Запросы",tokens:"Токены",
+ share:"Доля",serving:"Раздают",type:"Тип",details:"Детали",time:"Время",block:"Блок",proposer:"Пропозер",
+ height_c:"Высота",hash:"Хэш",receipt:"Чек",node:"Узел",paid:"Оплата",check:"Проверка",sender:"Отправитель",
+ participants:"Участники сети",participant:"Участник",hardware:"Железо",weight:"Вес",load:"Загрузка",
+ valid:"Валидно",invalid:"Невалидно",earned:"Заработано",price_c:"Цена",lastseen:"Виден",autorefresh:"автообновление 8с",
+ run_h:"Запустите узел — зарабатывайте DVT за инференс",
+ run_sub:"Двуязычный мастер доведёт голую машину до живого зарабатывающего узла. Внешний доступ автоматический — напрямую или через релей. Без проброса портов.",
+ have_python:"Есть Python",ext_access:"Внешний доступ",ext_auto:"автоматический (direct или relay, ноль портов)",
+ pricing:"Цена",pricing_v:"электричество + 50% маржа —",full_guide:"Полный гайд",
+ conn_h:"Подключить клиента",conn_sub:"Направьте любой OpenAI / Ollama / Anthropic инструмент на этот шлюз. Модель всегда auto.",
+ need_key:"Нужен ключ?",need_key_v:"на LAN необязателен —",foot:"децентрализованная AI-сеть: эксплорер и аналитика",
+ tokens_served:"AI-токены",dvt_paid:"DVT оплачено",nodes_online:"Узлов онлайн",checks_ok:"Прошли проверку",
+ vs_prev:"к пред. окну",ago:"назад",just_now:"только что",online:"онлайн",offline:"офлайн",jailed:"в жале",
+ relay_host:"релей-хост",via_relay:"через релей",direct:"напрямую",open_chat:"Открыть чат →",no_data:"данных пока нет",
+ not_found:"Ничего не найдено",blk:"Блок",addr:"Адрес",balance:"Баланс",stake:"Стейк",nonce:"Нонс",
+ node_receipts:"Последние чеки узла",txs_in_block:"Транзакции",reward:"награда",active_j:"задач",
+ sum_active:"Активны",sum_total:"Зарегистрировано",sum_relays:"Релеи",sum_jailed:"В жале"}};
+let LANG=localStorage.getItem('dv_lang')||'en';
+const t=k=>(I18N[LANG]&&I18N[LANG][k])||I18N.en[k]||k;
+function applyLang(){
+  document.documentElement.lang=LANG;
+  document.querySelectorAll('[data-t]').forEach(el=>{el.textContent=t(el.dataset.t);});
+  document.querySelectorAll('.lang button').forEach(b=>b.classList.toggle('on',b.dataset.lang===LANG));
+  $('#q').placeholder=t('search_ph');
+}
+
+/* ============================ utils ============================ */
 const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
-const dvt=u=>(u/1e6), fmt=n=>Number(n||0).toLocaleString('en-US'),
-      fdvt=u=>dvt(u).toLocaleString('en-US',{maximumFractionDigits:2}),
-      short=(a,n=10)=>a?a.slice(0,n)+'…':'—';
-let CFG={origin:location.origin, repo:'https://github.com/alexkolumbo/deltav'};
-
+const fmt=n=>Number(n||0).toLocaleString('en-US');
+const dvt=u=>Number(u||0)/1e6;
+const fdvt=u=>dvt(u).toLocaleString('en-US',{maximumFractionDigits:2});
+const short=(a,n=10)=>a?(a.length>n+2?a.slice(0,n)+'…':a):'—';
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function agoTs(ts){ if(!ts)return '—'; const s=Math.max(0,Date.now()/1000-ts);
+  if(s<5)return t('just_now'); if(s<60)return `${s|0}s ${t('ago')}`;
+  if(s<3600)return `${(s/60)|0}m ${t('ago')}`; if(s<86400)return `${(s/3600)|0}h ${t('ago')}`;
+  return `${(s/86400)|0}d ${t('ago')}`;}
+function agoBlocks(n,bt){ return agoTs(Date.now()/1000-n*bt); }
+function hhmmss(sec){sec=Math.max(0,sec|0);const h=(sec/3600)|0,m=((sec%3600)/60)|0,s=sec%60;
+  return (h?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');}
 async function getJSON(p){try{const r=await fetch(p);if(!r.ok)throw 0;return await r.json();}catch(e){return null;}}
+let CFG={origin:location.origin,repo:'https://github.com/alexkolumbo/deltav'};
+let OV=null, SER=null, BT=2.0, nextEpochAt=0;
 
-/* ---- tabs ---- */
+/* ============================ charts (pure SVG) ============================ */
+function sparkline(vals,{w=260,h=44,stroke='var(--accent)'}={}){
+  if(!vals.length||vals.every(v=>!v)) vals=vals.length?vals:[0,0];
+  const max=Math.max(...vals,1),min=Math.min(...vals,0);
+  const pts=vals.map((v,i)=>[i/(vals.length-1||1)*w,h-3-(v-min)/(max-min||1)*(h-8)]);
+  const line=pts.map(p=>p.map(x=>x.toFixed(1)).join(',')).join(' ');
+  const area=`0,${h} `+line+` ${w},${h}`;
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <defs><linearGradient id="g${stroke.length}${vals.length}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${stroke}" stop-opacity=".28"/><stop offset="1" stop-color="${stroke}" stop-opacity="0"/></linearGradient></defs>
+    <polygon points="${area}" fill="url(#g${stroke.length}${vals.length})"/>
+    <polyline points="${line}" fill="none" stroke="${stroke}" stroke-width="2" stroke-linejoin="round"/></svg>`;
+}
+function signedBars(rows,box){
+  const W=Math.max(320,box.clientWidth||640),H=180,mid=H*0.62;
+  const n=rows.length||1,bw=Math.max(3,(W-20)/n-3);
+  const maxUp=Math.max(...rows.map(r=>r.ok+ (r.requests-r.ok-r.fail)),1);
+  const maxDn=Math.max(...rows.map(r=>r.fail),1);
+  let s=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">`;
+  s+=`<line x1="0" y1="${mid}" x2="${W}" y2="${mid}" stroke="var(--line)" stroke-width="1"/>`;
+  rows.forEach((r,i)=>{
+    const x=10+i*((W-20)/n);
+    const pend=r.requests-r.ok-r.fail;
+    const okH=(r.ok/maxUp)*(mid-12), pendH=(pend/maxUp)*(mid-12);
+    const dnH=(r.fail/maxDn)*(H-mid-14);
+    if(pend>0) s+=`<rect x="${x}" y="${mid-okH-pendH}" width="${bw}" height="${pendH}" fill="var(--dim2)" opacity=".55" rx="1.5"/>`;
+    if(r.ok>0) s+=`<rect x="${x}" y="${mid-okH}" width="${bw}" height="${okH}" fill="var(--ok)" rx="1.5"/>`;
+    if(r.fail>0) s+=`<rect x="${x}" y="${mid+2}" width="${bw}" height="${dnH}" fill="var(--bad)" rx="1.5"/>`;
+    s+=`<title>#${r.from}–${r.to}: ${r.requests} req, ok ${r.ok}, fail ${r.fail}</title>`;
+  });
+  s+=`</svg>`;
+  box.innerHTML=s;
+}
+
+/* ============================ tabs & lang & search ============================ */
 function show(tab){
-  $$('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+  $$('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
   $$('.tab').forEach(s=>s.classList.toggle('on',s.id==='tab-'+tab));
   if(location.hash.slice(1)!==tab) history.replaceState(null,'','#'+tab);
   if(tab==='explorer') loadExplorer();
-  if(tab==='monitor') loadMonitor();
+  if(tab==='nodes') loadNodes();
 }
-$('#nav').addEventListener('click',e=>{if(e.target.dataset.tab)show(e.target.dataset.tab);});
+$('#tabs').addEventListener('click',e=>{if(e.target.dataset.tab)show(e.target.dataset.tab);});
 document.addEventListener('click',e=>{const g=e.target.dataset&&e.target.dataset.goto;if(g){e.preventDefault();show(g);}});
+$$('.lang button').forEach(b=>b.addEventListener('click',()=>{LANG=b.dataset.lang;
+  localStorage.setItem('dv_lang',LANG);applyLang();renderAll();}));
+$('#q').addEventListener('keydown',async e=>{
+  if(e.key!=='Enter')return;
+  const q=$('#q').value.trim(); if(!q)return;
+  show('explorer');
+  $('#searchout').innerHTML=`<div class="card"><span class="muted">…</span></div>`;
+  const r=await getJSON('/portal/search?q='+encodeURIComponent(q));
+  renderSearch(r,q);
+});
+function renderSearch(r,q){
+  const box=$('#searchout');
+  if(!r||r.type==='not_found'||r.type==='none'){box.innerHTML=`<div class="card"><b>${t('not_found')}</b> <span class="muted mono">${esc(q)}</span></div>`;return;}
+  if(r.type==='block'&&r.block){box.innerHTML='';openBlock(r.block);return;}
+  if(r.type==='receipt'){box.innerHTML='';openReceipt(r.receipt);return;}
+  if(r.type==='address'){box.innerHTML='';openAddress(q,r.result);return;}
+  if(r.type==='models'){box.innerHTML=`<div class="card">${r.models.map(m=>
+    `<div class="kv"><span>${esc(m.name)}</span><b>${fmt(m.requests)} req · ${fmt(m.tokens)} tok</b></div>`).join('')}</div>`;}
+}
 
-/* ---- overview ---- */
-function statCard(k,v,sub){return `<div class="card stat"><div class="k">${k}</div><div class="v">${v}${sub?` <small>${sub}</small>`:''}</div></div>`;}
+/* ============================ drawer ============================ */
+function drawer(title,html){$('#dtitle').textContent=title;$('#dbody').innerHTML=html;$('#drawer').classList.add('on');}
+$('#dclose').addEventListener('click',()=>$('#drawer').classList.remove('on'));
+$('#drawer .veil').addEventListener('click',()=>$('#drawer').classList.remove('on'));
+function openBlock(b){
+  const txs=(b.txs||[]).map(tx=>`<div class="kv"><span>${esc(tx.type)}</span><b class="mono">${short(tx.hash,14)}</b></div>`).join('')||`<div class="muted small">${t('no_data')}</div>`;
+  drawer(`${t('blk')} #${fmt(b.height)}`,`
+    <div class="kv"><span>${t('hash')}</span><b class="mono">${esc(b.hash||'')}</b></div>
+    <div class="kv"><span>${t('proposer')}</span><b class="mono">${esc(b.proposer||'')}</b></div>
+    <div class="kv"><span>${t('time')}</span><b>${agoTs(b.timestamp)}</b></div>
+    <div class="kv"><span>Slot</span><b>${b.slot||0}</b></div>
+    <h2 style="margin-top:16px">${t('txs_in_block')} (${(b.txs||[]).length})</h2>${txs}`);
+}
+async function openBlockH(h){const r=await getJSON('/portal/block/'+h); if(r&&r.block)openBlock(r.block);}
+function openReceipt(r){
+  drawer(`${t('receipt')} ${short(r.receipt_hash,12)}`,`
+    <div class="kv"><span>${t('node')}</span><b class="mono click" style="cursor:pointer" onclick="openAddress('${esc(r.node)}')">${esc(r.node)}</b></div>
+    <div class="kv"><span>${t('model')}</span><b>${esc((r.model||'').split('::')[0])}</b></div>
+    <div class="kv"><span>${t('tokens')}</span><b>${fmt(r.tokens)}</b></div>
+    <div class="kv"><span>${t('paid')}</span><b>${fdvt(r.price_paid)} DVT</b></div>
+    <div class="kv"><span>${t('check')}</span><b>${r.checked?(r.check_ok?'✅':'❌'):'⏳'}</b></div>
+    <div class="kv"><span>${t('height_c')}</span><b>${fmt(r.height)}</b></div>`);
+}
+async function openAddress(addr,pre){
+  const r=pre||await getJSON('/portal/address/'+addr); if(!r)return;
+  const acc=r.account||{}, node=r.node;
+  let html=`<div class="kv"><span>${t('addr')}</span><b class="mono">${esc(addr)}</b></div>
+    <div class="kv"><span>${t('balance')}</span><b>${fdvt(acc.balance)} DVT</b></div>
+    <div class="kv"><span>${t('stake')}</span><b>${fdvt(acc.stake)} DVT</b></div>
+    <div class="kv"><span>${t('nonce')}</span><b>${fmt(acc.nonce)}</b></div>`;
+  if(node){
+    const hw=node.hardware||{};
+    html+=`<h2 style="margin-top:16px">${t('node')}</h2>
+      <div class="kv"><span>${t('hardware')}</span><b>${esc(hw.vendor||'?')} ${esc(hw.name||'')} · ${fmt(hw.vram_mb)} MB</b></div>
+      <div class="kv"><span>${t('model')}</span><b>${(node.models||[]).map(m=>esc(m.split('::')[0].split('/').pop())).join(', ')||'—'}</b></div>
+      <div class="kv"><span>endpoint</span><b class="mono">${esc(node.endpoint||'')}</b></div>
+      <div class="kv"><span>${t('tokens')}</span><b>${fmt(node.tokens_served)}</b></div>`;
+  }
+  const rec=(r.receipts||[]).map(x=>`<div class="kv"><span>${esc((x.model||'').split('::')[0].split('/').pop())} · ${fmt(x.tokens)} tok</span><b>${x.checked?(x.check_ok?'✅':'❌'):'⏳'} ${fdvt(x.price_paid)} DVT</b></div>`).join('');
+  if(rec) html+=`<h2 style="margin-top:16px">${t('node_receipts')}</h2>`+rec;
+  drawer(short(addr,16),html);
+}
+window.openAddress=openAddress;
+
+/* ============================ overview ============================ */
+function statCard(k,v,sub,vals,deltaPct,color){
+  const d=deltaPct==null?'':`<span class="delta ${deltaPct>0.5?'up':(deltaPct<-0.5?'down':'flat')}">${deltaPct>0?'↑':(deltaPct<0?'↓':'·')} ${Math.abs(deltaPct).toFixed(1)}% ${t('vs_prev')}</span>`;
+  return `<div class="card stat"><div class="k">${k}</div><div class="v">${v}${sub?` <small>${sub}</small>`:''}</div>${d}${vals?sparkline(vals,{stroke:color||'var(--accent)'}):''}</div>`;
+}
+function pctDelta(vals){ if(!vals||vals.length<2)return null;
+  const cur=vals[vals.length-1],prev=vals[vals.length-2];
+  if(!prev&&!cur)return null; if(!prev)return 100; return (cur-prev)/prev*100;}
 async function loadOverview(){
-  const o=await getJSON('/portal/overview'); if(!o)return;
-  $('#chainid').textContent=o.chain_id||'delta v';
+  const [o,s]=await Promise.all([getJSON('/portal/overview'),getJSON('/portal/series?buckets=30')]);
+  if(!o)return; OV=o;SER=s;BT=o.block_time||2.0;
+  nextEpochAt=Date.now()+o.epoch_next_in_s*1000;
+  $('#s-chain').textContent=o.chain_id||'delta v';
   $('#livedot').style.background=o.nodes_online?'var(--ok)':'var(--bad)';
-  $('#ovstats').innerHTML=[
-    statCard('Height',fmt(o.height)),
-    statCard('Nodes online',`${o.nodes_online}`,`/ ${o.nodes_total}`),
-    statCard('Models',fmt((o.models_served||[]).length)),
-    statCard('Validators',fmt(o.validators)),
-    statCard('Relays',fmt(o.relays)),
-    statCard('Tokens served',fmt(o.tokens_served_total)),
-    statCard('Pool',fdvt(o.pool_udvt),'DVT'),
-    statCard('Receipts',fmt(o.receipts)),
-  ].join('');
-  const m=o.models_served||[];
-  $('#ovmodels').innerHTML=m.length?m.map(x=>`<span class="chip">${x.split('::')[0].split('/').pop()}</span>`).join(''):'<span class="muted">no models live right now</span>';
+  $('#s-epoch').textContent=fmt(o.epoch);
+  $('#s-height').textContent=fmt(o.height);
+  $('#s-price').textContent=`${o.price_per_token} udvt/tok`;
+  renderOverview();
+  loadFeeds();
 }
+function renderOverview(){
+  if(!OV)return; const o=OV, rows=(SER&&SER.series)||[];
+  const tok=rows.map(r=>r.tokens), req=rows.map(r=>r.requests), paid=rows.map(r=>dvt(r.paid_udvt));
+  const okTotal=rows.reduce((a,r)=>a+r.ok,0), judged=rows.reduce((a,r)=>a+r.ok+r.fail,0);
+  $('#ovcards').innerHTML=[
+    statCard(t('tokens_served'),fmt(o.tokens_served_total),'',tok,pctDelta(tok)),
+    statCard(t('requests'),fmt(o.receipts),'',req,pctDelta(req),'var(--accent2)'),
+    statCard(t('nodes_online'),`${o.nodes_online}`,`/ ${o.nodes_total}`,null,null),
+    statCard(t('checks_ok'),judged?`${(100*okTotal/judged).toFixed(1)}%`:'—',
+      `${fmt(okTotal)}/${fmt(judged)}`,paid,null,'var(--ok)'),
+  ].join('');
+  if(rows.length) signedBars(rows,$('#reqchart'));
+  // weights
+  const nodes=[...o.nodes].sort((a,b)=>b.weight_pct-a.weight_pct).slice(0,12);
+  $('#weights').innerHTML=nodes.map(n=>`<div class="wbar">
+      <span class="addr mono click" style="cursor:pointer" onclick="openAddress('${esc(n.address)}')">${short(n.address,12)}</span>
+      <span class="track"><i style="width:${Math.max(2,n.weight_pct)}%"></i></span>
+      <span class="pct num">${n.weight_pct}%</span></div>`).join('')||`<div class="empty">${t('no_data')}</div>`;
+}
+async function loadFeeds(){
+  const [m,x,b]=await Promise.all([getJSON('/portal/models'),getJSON('/portal/txs?limit=10'),getJSON('/portal/blocks?limit=10')]);
+  if(m) $('#modelstbl tbody').innerHTML=(m.models||[]).slice(0,8).map((mm,i)=>`<tr>
+    <td class="muted">#${i+1}</td><td><b>${esc(mm.name)}</b></td><td class="num">${fmt(mm.requests)}</td>
+    <td class="num">${fmt(mm.tokens)}</td><td class="num">${mm.share_pct}%</td>
+    <td>${mm.nodes_serving?`<span class="badge b-ok">${mm.nodes_serving}</span>`:'<span class="badge b-dim">0</span>'}</td></tr>`).join('')
+    ||`<tr><td colspan="6" class="empty">${t('no_data')}</td></tr>`;
+  if(x) $('#ovtxs tbody').innerHTML=(x.txs||[]).slice(0,10).map(txRow).join('')||`<tr><td colspan="3" class="empty">${t('no_data')}</td></tr>`;
+  if(b) $('#ovblocks tbody').innerHTML=(b.headers||[]).slice(0,10).map(h=>`<tr class="click" onclick="openBlockH(${h.height})">
+    <td class="mono">#${fmt(h.height)}</td><td class="num">${h.txs}</td>
+    <td class="mono">${short(h.proposer,10)}</td><td class="muted">${agoTs(h.timestamp)}</td></tr>`).join('');
+}
+window.openBlockH=openBlockH;
+function txBadge(type){
+  const map={transfer:['b-acc','transfer'],inference_receipt:['b-ok','inference'],
+    spot_check:['b-warn','spot check'],register_node:['b-dim','register'],stake:['b-acc','stake'],unstake:['b-dim','unstake']};
+  const[b,l]=map[type]||['b-dim',type];return `<span class="badge ${b}">${l}</span>`;}
+function txDetail(tx){
+  if(tx.type==='transfer')return `${short(tx.sender,8)} → ${short(tx.to,8)} · <b>${fdvt(tx.amount_udvt)} DVT</b>`;
+  if(tx.type==='inference_receipt')return `${esc(tx.model||'')} · ${fmt(tx.tokens)} tok`;
+  if(tx.type==='spot_check')return tx.ok?'✅ ok':'❌ fail';
+  if(tx.type==='stake')return `<b>${fdvt(tx.amount_udvt)} DVT</b>`;
+  return short(tx.sender,12);}
+function txRow(tx){return `<tr><td>${txBadge(tx.type)}</td><td>${txDetail(tx)}</td><td class="muted">${agoTs(tx.timestamp)}</td></tr>`;}
 
-/* ---- explorer ---- */
-function connBadge(c){const map={direct:['b-direct','direct'],relay:['b-relay','via relay'],'relay-host':['b-relayhost','relay host']};const[b,t]=map[c]||['b-direct',c];return `<span class="badge ${b}">${t}</span>`;}
+/* ============================ explorer ============================ */
 async function loadExplorer(){
-  const [b,r,o]=await Promise.all([getJSON('/portal/blocks'),getJSON('/portal/receipts'),getJSON('/portal/overview')]);
-  const bt=$('#blocks tbody');
-  bt.innerHTML=(b&&b.headers||[]).slice(0,25).map(h=>`<tr><td class="mono">${fmt(h.height)}</td><td class="mono">${short(h.proposer||h.pubkey)}</td><td>${h.tx_count??h.txs??'·'}</td><td class="mono">${short(h.hash,12)}</td></tr>`).join('')||'<tr><td colspan=4 class="empty">no blocks</td></tr>';
-  const rt=$('#receipts tbody');
-  rt.innerHTML=(r&&r.receipts||[]).slice(0,25).map(x=>`<tr><td class="mono">${short(x.node)}</td><td>${(x.model||'').split('::')[0].split('/').pop()}</td><td>${fmt(x.tokens)}</td><td class="mono">${fdvt(x.price_paid)}</td><td>${x.checked?(x.check_ok?'<span class="badge b-direct">ok</span>':'<span class="badge b-off">fail</span>'):'<span class="muted">—</span>'}</td></tr>`).join('')||'<tr><td colspan=5 class="empty">no receipts yet</td></tr>';
-  const nt=$('#expnodes tbody');
-  nt.innerHTML=((o&&o.nodes)||[]).map(n=>`<tr><td class="mono">${short(n.address)}</td><td>${connBadge(n.connectivity)}</td><td>${n.vendor} ${n.device||''}</td><td>${(n.models||[]).map(m=>m.split('::')[0].split('/').pop()).join(', ')||'—'}</td><td>${n.reputation}</td><td class="mono">${n.price_per_token}</td><td>${n.jailed?'<span class="badge b-off">jailed</span>':(n.alive?'<span class="badge b-direct">live</span>':'<span class="badge b-off">down</span>')}</td></tr>`).join('')||'<tr><td colspan=7 class="empty">no nodes</td></tr>';
+  const [b,r,x]=await Promise.all([getJSON('/portal/blocks?limit=25'),getJSON('/portal/receipts?limit=25'),getJSON('/portal/txs?limit=25')]);
+  if(b) $('#blocks tbody').innerHTML=(b.headers||[]).map(h=>`<tr class="click" onclick="openBlockH(${h.height})">
+    <td class="mono">#${fmt(h.height)}</td><td class="muted">${agoTs(h.timestamp)}</td>
+    <td class="mono">${short(h.proposer,12)}</td><td>${h.slot||0}</td><td class="num">${h.txs}</td>
+    <td class="mono muted">${short(h.hash,14)}</td></tr>`).join('')||`<tr><td colspan="6" class="empty">${t('no_data')}</td></tr>`;
+  if(r){ window._rc={}; $('#receipts tbody').innerHTML=(r.receipts||[]).map((x2,i)=>{window._rc[i]=x2;
+    return `<tr class="click" onclick="openReceipt(window._rc[${i}])">
+    <td class="mono">${short(x2.receipt_hash,10)}</td><td class="mono">${short(x2.node,10)}</td>
+    <td>${esc((x2.model||'').split('::')[0].split('/').pop())}</td><td class="num">${fmt(x2.tokens)}</td>
+    <td class="num">${fdvt(x2.price_paid)}</td>
+    <td>${x2.checked?(x2.check_ok?'<span class="badge b-ok">ok</span>':'<span class="badge b-bad">fail</span>'):'<span class="badge b-dim">…</span>'}</td>
+    <td class="num muted">${fmt(x2.height)}</td></tr>`;}).join('')||`<tr><td colspan="7" class="empty">${t('no_data')}</td></tr>`;}
+  if(x) $('#txs tbody').innerHTML=(x.txs||[]).map(tx=>`<tr>
+    <td>${txBadge(tx.type)}</td><td class="mono click" style="cursor:pointer" onclick="openAddress('${esc(tx.sender)}')">${short(tx.sender,12)}</td>
+    <td>${txDetail(tx)}</td><td class="num muted">${fmt(tx.height)}</td><td class="muted">${agoTs(tx.timestamp)}</td></tr>`).join('');
 }
+window.openReceipt=openReceipt;
 
-/* ---- monitor ---- */
-let monTimer=null;
-async function loadMonitor(){
-  const o=await getJSON('/portal/overview'); if(!o)return;
-  $('#monagg').innerHTML=[
-    statCard('Online',`${o.nodes_online}`,`/ ${o.nodes_total}`),
-    statCard('Direct',fmt(o.direct_nodes)),
-    statCard('Via relay',fmt(o.relayed_nodes)),
-    statCard('Relays',fmt(o.relays)),
-    statCard('Jobs done',fmt(o.jobs_done_total)),
-    statCard('Unchecked',fmt(o.unchecked_receipts)),
+/* ============================ nodes ============================ */
+async function loadNodes(){
+  const o=OV||await getJSON('/portal/overview'); if(!o)return;
+  const nodes=o.nodes||[];
+  $('#nodesum').innerHTML=[
+    statCard(t('sum_active'),nodes.filter(n=>n.alive).length,`/ ${nodes.length}`),
+    statCard(t('sum_relays'),o.relays,''),
+    statCard(t('via_relay'),o.relayed_nodes,''),
+    statCard(t('sum_jailed'),nodes.filter(n=>n.jailed).length,''),
   ].join('');
-  $('#moncards').innerHTML=(o.nodes||[]).map(n=>{
+  $('#nodestbl tbody').innerHTML=nodes.sort((a,b)=>b.weight_pct-a.weight_pct).map(n=>{
+    const conn=n.connectivity==='relay'?`<span class="badge b-acc">${t('via_relay')}</span>`
+      :(n.connectivity==='relay-host'?`<span class="badge b-warn">${t('relay_host')}</span>`
+      :`<span class="badge b-ok">${t('direct')}</span>`);
+    const state=n.jailed?`<span class="badge b-bad">${t('jailed')}</span>`:'';
     const load=Math.round((n.load||0)*100);
-    const st=n.jailed?'<span class="badge b-off">jailed</span>':(n.alive?'<span class="badge b-direct">live</span>':'<span class="badge b-off">down</span>');
-    return `<div class="card nodecard">
-      <div class="top"><span class="mono">${short(n.address)}</span>${st}</div>
-      <div class="muted" style="font-size:12.5px">${n.vendor} ${n.device||''} · ${n.vram_mb?fmt(n.vram_mb)+' MB':'—'} ${connBadge(n.connectivity)}</div>
-      <div class="loadbar"><span style="width:${load}%"></span></div>
-      <div class="kv"><span>load</span><b>${load}% · ${n.active_jobs}/${n.max_parallel_jobs} jobs</b></div>
-      <div class="kv"><span>height / peers</span><b>${fmt(n.height)} · ${n.peers}</b></div>
-      <div class="kv"><span>tokens · rep</span><b>${fmt(n.tokens_served)} · ${n.reputation}</b></div>
-      <div class="kv"><span>price · earned</span><b>${n.price_per_token} · ${fdvt(n.earnings_udvt)} DVT</b></div>
-      <div class="kv"><span>models</span><b>${(n.models||[]).map(m=>m.split('::')[0].split('/').pop()).join(', ')||'—'}</b></div>
-    </div>`;}).join('')||'<div class="empty">no nodes registered</div>';
+    return `<tr class="click" onclick="openAddress('${esc(n.address)}')">
+      <td><div class="mono">${short(n.address,14)}</div><div style="margin-top:3px">${conn} ${state}</div></td>
+      <td><b>${esc(n.vendor)}</b> ${esc(n.device||'')}<div class="muted small">${fmt(n.vram_mb)} MB · ${esc(n.backend)}</div></td>
+      <td><b class="num">${n.weight_pct}%</b><div class="muted small">${fdvt(n.stake)} DVT</div></td>
+      <td><div class="loadbar"><i style="width:${load}%"></i></div><div class="muted small">${load}% · ${n.active_jobs}/${n.max_parallel_jobs} ${t('active_j')}</div></td>
+      <td class="num" style="color:var(--ok)">${fmt(n.checks_ok)}</td>
+      <td class="num" style="color:${n.checks_fail?'var(--bad)':'var(--dim)'}">${fmt(n.checks_fail)}</td>
+      <td class="num">${n.fail_pct}%</td>
+      <td class="num">${fmt(n.tokens_served)}</td>
+      <td class="num">${fdvt(n.earnings_udvt)} <span class="muted">DVT</span></td>
+      <td class="num">${n.price_per_token}</td>
+      <td><span class="dot ${n.alive?'on':'off'}"></span>${n.alive?t('online'):t('offline')}<div class="muted small">${agoBlocks(n.last_seen_blocks_ago,BT)}</div></td>
+    </tr>`;}).join('')||`<tr><td colspan="11" class="empty">${t('no_data')}</td></tr>`;
 }
-$('#auto').addEventListener('change',e=>{if(e.target.checked)startMon();else stopMon();});
-function startMon(){stopMon();monTimer=setInterval(()=>{if($('#tab-monitor').classList.contains('on'))loadMonitor();},5000);}
-function stopMon(){if(monTimer)clearInterval(monTimer);monTimer=null;}
 
-/* ---- run a node ---- */
+/* ============================ run / connect ============================ */
 const OS={
-  linux:`# Linux / macOS — one command\ncurl -fsSL ${'https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.sh'} | sh`,
-  win:`# Windows (PowerShell)\nirm https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.ps1 | iex`,
-  py:`# Already have Python 3.11+\npip install "deltav-network[gpu,hub] @ git+https://github.com/alexkolumbo/deltav"\ndeltav join --seed ${'ORIGIN'}   # external access auto: direct if reachable, else relay`,
-};
-function block(txt){return `<pre><button class="copy">copy</button>${txt.replace(/ORIGIN/g,CFG.origin).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}</pre>`;}
+ linux:`# Linux / macOS — one command\ncurl -fsSL https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.sh | sh`,
+ win:`# Windows (PowerShell)\nirm https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.ps1 | iex`,
+ py:`# Python 3.11+\npip install "deltav-network[gpu,hub] @ git+https://github.com/alexkolumbo/deltav"\ndeltav join --seed ORIGIN   # connect=auto: direct if reachable, else relay`};
+const block=txt=>`<pre><button class="copy">copy</button>${esc(txt.replace(/ORIGIN/g,CFG.origin))}</pre>`;
 function renderOS(os){$('#oscmd').innerHTML=block(OS[os]);}
-$('#osseg').addEventListener('click',e=>{if(!e.target.dataset.os)return;$$('#osseg button').forEach(b=>b.classList.toggle('on',b===e.target));renderOS(e.target.dataset.os);});
-
-/* ---- connect ---- */
-function tool(t){
+$('#osseg').addEventListener('click',e=>{if(!e.target.dataset.os)return;
+  $$('#osseg button').forEach(b=>b.classList.toggle('on',b===e.target));renderOS(e.target.dataset.os);});
+function tool(tl){
   const o=CFG.origin;
-  const T={
-    web:`Open the chat straight in your browser — installable as an app:\n\n${o}/chat`,
-    openai:`# OpenAI-compatible (goose, opencode, openai SDK, Hermes)\nbase_url = ${o}/v1\napi_key  = dvk_…          # any string on an open LAN gateway\nmodel    = "auto"`,
-    ollama:`# Ollama-compatible (Open WebUI, LangChain)\nOLLAMA_HOST=${o}\ncurl ${o}/api/chat -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'`,
-    anthropic:`# Anthropic SDK\nbase_url = ${o}\nmodel    = "auto"`,
-    cli:`pip install "deltav-network @ git+https://github.com/alexkolumbo/deltav"\ndeltav connect --url ${o} --key dvk_…\ndeltav repl        # or: deltav serve  (zero-config localhost proxy)`,
-  };
-  const body=T[t]; const isweb=t==='web';
-  $('#toolbody').innerHTML = isweb
-    ? `<div class="card"><p>${body.split('\n\n')[0]}</p><a class="btn" href="/chat">Open ${o}/chat →</a></div>`
-    : block(body);
+  const T={web:null,
+   openai:`# OpenAI-compatible (goose, opencode, openai SDK, Hermes)\nbase_url = ${o}/v1\napi_key  = dvk_…\nmodel    = "auto"`,
+   ollama:`# Ollama-compatible (Open WebUI, LangChain)\nOLLAMA_HOST=${o}\ncurl ${o}/api/chat -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'`,
+   anthropic:`# Anthropic SDK\nbase_url = ${o}\nmodel    = "auto"`,
+   cli:`pip install "deltav-network @ git+https://github.com/alexkolumbo/deltav"\ndeltav connect --url ${o} --key dvk_…\ndeltav repl        # or: deltav serve  (zero-config localhost proxy)`};
+  $('#toolbody').innerHTML = tl==='web'
+    ? `<div class="card" style="margin-top:12px"><p class="muted">${esc(o)}/chat</p><a class="btn" href="/chat">${t('open_chat')}</a></div>`
+    : block(T[tl]);
 }
-$('#toolseg').addEventListener('click',e=>{if(!e.target.dataset.tool)return;$$('#toolseg button').forEach(b=>b.classList.toggle('on',b===e.target));tool(e.target.dataset.tool);});
-
-/* ---- copy buttons ---- */
+$('#toolseg').addEventListener('click',e=>{if(!e.target.dataset.tool)return;
+  $$('#toolseg button').forEach(b=>b.classList.toggle('on',b===e.target));tool(e.target.dataset.tool);});
 document.addEventListener('click',e=>{
   if(!e.target.classList.contains('copy'))return;
   const pre=e.target.closest('pre'); const txt=pre.textContent.replace(/^copy/,'');
-  navigator.clipboard.writeText(txt.trim()).then(()=>{e.target.textContent='copied';setTimeout(()=>e.target.textContent='copy',1200);});
+  navigator.clipboard.writeText(txt.trim()).then(()=>{e.target.textContent='✓';setTimeout(()=>e.target.textContent='copy',1200);});
 });
 
-/* ---- boot ---- */
+/* ============================ boot ============================ */
+function renderAll(){renderOverview();loadFeeds();
+  if($('#tab-nodes').classList.contains('on'))loadNodes();
+  if($('#tab-explorer').classList.contains('on'))loadExplorer();
+  renderOS($$('#osseg button').find(b=>b.classList.contains('on'))?.dataset.os||'linux');
+  tool($$('#toolseg button').find(b=>b.classList.contains('on'))?.dataset.tool||'web');}
+setInterval(()=>{ if(nextEpochAt) $('#s-next').textContent=hhmmss((nextEpochAt-Date.now())/1000); },1000);
+let timer=null;
+function startAuto(){stopAuto();timer=setInterval(async()=>{
+  if(document.hidden)return;
+  await loadOverview();
+  if($('#tab-nodes').classList.contains('on')&&$('#auto').checked)loadNodes();
+  if($('#tab-explorer').classList.contains('on'))loadExplorer();
+},8000);}
+function stopAuto(){if(timer)clearInterval(timer);timer=null;}
 (async()=>{
+  applyLang();
   const c=await getJSON('/portal/config'); if(c)CFG=c;
-  renderOS('linux'); tool('web'); loadOverview();
-  const start=location.hash.slice(1); if(['explorer','monitor','run','connect'].includes(start))show(start);
-  startMon();
-  setInterval(loadOverview,10000);
+  renderOS('linux'); tool('web');
+  await loadOverview();
+  const start=location.hash.slice(1);
+  if(['explorer','nodes','run','connect'].includes(start))show(start);
+  startAuto();
 })();
 </script>
 </body>
