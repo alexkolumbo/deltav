@@ -17,7 +17,9 @@ from typing import Any
 
 import httpx
 
-from ..chain.transaction import receipt_auth_bytes
+import secrets
+
+from ..chain.transaction import receipt_auth_bytes, receipt_auth_bytes_v2
 from ..crypto import KeyPair, canonical_json, sha256_hex
 from .catalog import Catalog, ModelSpec, estimate_vram_mb
 from .scoring import NodeView, score_node
@@ -71,11 +73,16 @@ class SmartRouter:
         requester: KeyPair,
         client: httpx.AsyncClient,
         price_per_token: int,
+        chain_id: str = "",
+        version: int = 1,
     ):
         self.catalog = catalog
         self.requester = requester
         self.client = client
         self.price_per_token = price_per_token
+        # v2 payment: sign a single-use voucher bound to chain_id (audit C1/C7).
+        self.chain_id = chain_id
+        self.version = version
         self.nodes: list[NodeView] = []
         self.chain_height = 0
 
@@ -175,9 +182,6 @@ class SmartRouter:
         payer = requester or self.requester
         req_hash = request_hash_for(prompt, spec.ref, max_tokens, seed)
         price_limit = self.estimate_price_limit(prompt, max_tokens)
-        auth_sig = payer.sign(
-            receipt_auth_bytes(req_hash, node.address, spec.ref, price_limit)
-        )
         body = {
             "prompt": prompt,
             "model": spec.ref,
@@ -186,9 +190,20 @@ class SmartRouter:
             "seed": seed,
             "requester": payer.address,
             "requester_pubkey": payer.public_hex,
-            "requester_sig": auth_sig,
             "price_limit": price_limit,
         }
+        if self.version >= 2:
+            # Single-use payment voucher: one signature, one settlement, this
+            # chain only. The node echoes auth_nonce/expiry into the receipt.
+            auth_nonce = secrets.token_hex(16)
+            expiry = 0
+            body["auth_nonce"] = auth_nonce
+            body["expiry"] = expiry
+            body["requester_sig"] = payer.sign(receipt_auth_bytes_v2(
+                req_hash, node.address, spec.ref, price_limit, auth_nonce, expiry, self.chain_id))
+        else:
+            body["requester_sig"] = payer.sign(
+                receipt_auth_bytes(req_hash, node.address, spec.ref, price_limit))
         if images:
             body["images"] = images
         return body

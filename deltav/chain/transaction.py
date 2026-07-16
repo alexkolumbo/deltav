@@ -15,6 +15,9 @@ class TxType(str, Enum):
     UNSTAKE = "unstake"
     INFERENCE_RECEIPT = "inference_receipt"
     SPOT_CHECK = "spot_check"
+    # --- v2 reward mechanism ---
+    AVAILABILITY_LEASE = "availability_lease"  # node announces it's online for N blocks
+    DISPUTE = "dispute"                        # client flags a receipt for priority re-check
 
 
 @dataclass
@@ -26,15 +29,22 @@ class Tx:
     fee: int = 0
     pubkey: str = ""
     signature: str = ""
+    # Chain binding (v2): included in the signed bytes only when set, so a tx
+    # signed for one chain can't be replayed on a sibling chain (audit C7).
+    # Empty string reproduces v1 signed bytes exactly — alpha-3 stays valid.
+    chain_id: str = ""
 
     def signing_payload(self) -> dict:
-        return {
+        base = {
             "type": self.type,
             "sender": self.sender,
             "nonce": self.nonce,
             "payload": self.payload,
             "fee": self.fee,
         }
+        if self.chain_id:
+            base["chain_id"] = self.chain_id
+        return base
 
     def signing_bytes(self) -> bytes:
         return canonical_json(self.signing_payload())
@@ -58,7 +68,7 @@ class Tx:
         return verify_signature(self.pubkey, self.signing_bytes(), self.signature)
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "type": self.type,
             "sender": self.sender,
             "nonce": self.nonce,
@@ -67,6 +77,9 @@ class Tx:
             "pubkey": self.pubkey,
             "signature": self.signature,
         }
+        if self.chain_id:
+            out["chain_id"] = self.chain_id
+        return out
 
     @classmethod
     def from_dict(cls, data: dict) -> "Tx":
@@ -78,11 +91,27 @@ class Tx:
             fee=int(data.get("fee", 0)),
             pubkey=data.get("pubkey", ""),
             signature=data.get("signature", ""),
+            chain_id=data.get("chain_id", ""),
         )
 
 
 def receipt_auth_bytes(request_hash: str, node: str, model: str, price_limit: int) -> bytes:
-    """What a requester signs to authorize paying `node` for one inference job."""
+    """v1: what a requester signs to authorize paying `node` for one job."""
     return canonical_json(
         {"request_hash": request_hash, "node": node, "model": model, "price_limit": price_limit}
     )
+
+
+def receipt_auth_bytes_v2(request_hash: str, node: str, model: str, price_limit: int,
+                          auth_nonce: str, expiry: int, chain_id: str) -> bytes:
+    """v2 payment authorization: a single-use voucher.
+
+    Binding `auth_nonce` (settled exactly once), `expiry` (height) and
+    `chain_id` means one signature authorizes exactly one settlement on one
+    chain — a node can't re-bill the same authorization with a different
+    output_hash (audit C1) or replay it elsewhere (audit C7)."""
+    return canonical_json({
+        "request_hash": request_hash, "node": node, "model": model,
+        "price_limit": price_limit, "auth_nonce": auth_nonce,
+        "expiry": expiry, "chain_id": chain_id,
+    })

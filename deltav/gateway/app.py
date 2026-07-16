@@ -118,6 +118,8 @@ class GatewayDaemon:
             requester=self.keypair,
             client=self.client,
             price_per_token=self.params.price_per_token,
+            chain_id=self.params.chain_id,
+            version=self.params.version,
         )
         # Overlay: search engine + tool registry shared by tool-calling and agents.
         self.tools = tools or builtin_registry(self.client)

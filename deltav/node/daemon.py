@@ -145,8 +145,17 @@ class NodeDaemon:
         return max([base] + [n + 1 for n in pending])
 
     def _make_tx(self, tx_type: TxType, payload: dict) -> Tx:
-        tx = Tx(type=tx_type.value, sender=self.address, nonce=self._next_nonce(), payload=payload)
+        # v2 txs are bound to this chain (audit C7).
+        chain_id = self.chain_id if self.chain.genesis.params.version >= 2 else ""
+        tx = Tx(type=tx_type.value, sender=self.address, nonce=self._next_nonce(),
+                payload=payload, chain_id=chain_id)
         return tx.sign(self.keypair)
+
+    @staticmethod
+    def _auth_echo(body: dict) -> dict:
+        """v2 payment-voucher fields the requester signed — echoed into the
+        receipt so the chain can settle the one-time authorization."""
+        return {"auth_nonce": body.get("auth_nonce", ""), "expiry": int(body.get("expiry", 0))}
 
     async def submit_tx(self, tx: Tx) -> bool:
         if not self.mempool.add(tx):
@@ -477,6 +486,7 @@ class NodeDaemon:
             "tokens_out": result.tokens_out,
             "price_limit": int(body["price_limit"]),
             "deterministic": result.deterministic and self.backend.deterministic,
+            **self._auth_echo(body),
         })
         await self.submit_tx(receipt)
         return {
@@ -531,6 +541,7 @@ class NodeDaemon:
             "tokens_out": len(texts),
             "price_limit": int(body["price_limit"]),
             "deterministic": result.deterministic and self.backend.deterministic,
+            **self._auth_echo(body),
         })
         await self.submit_tx(receipt)
         return {
@@ -583,6 +594,7 @@ class NodeDaemon:
             "output_hash": output_hash, "model": model_ref, "seed": seed,
             "tokens_in": units, "tokens_out": 1, "price_limit": int(body["price_limit"]),
             "deterministic": result.deterministic and self.backend.deterministic,
+            **self._auth_echo(body),
         })
         await self.submit_tx(receipt)
         return {"images": result.images, "output_hash": output_hash,
@@ -651,6 +663,7 @@ class NodeDaemon:
                     "tokens_out": result.tokens_out,
                     "price_limit": int(body["price_limit"]),
                     "deterministic": result.deterministic and self.backend.deterministic,
+                    **self._auth_echo(body),
                 })
                 await self.submit_tx(receipt)
                 final = {
@@ -682,6 +695,8 @@ class NodeDaemon:
         self._tasks.append(asyncio.create_task(self._discovery_loop()))
         if self.cfg.spot_check:
             self._tasks.append(asyncio.create_task(self._checker_loop()))
+        if self.chain.genesis.params.version >= 2:
+            self._tasks.append(asyncio.create_task(self._lease_loop()))
 
     async def stop(self) -> None:
         self._running = False
@@ -861,6 +876,24 @@ class NodeDaemon:
             self.mempool.prune(self.chain.state)
             await self._gossip("/p2p/block", {"block": block.to_dict(), "from_url": self.cfg.public_url()})
 
+    async def _lease_loop(self) -> None:
+        """v2: while we're up and producing, keep a live availability lease on
+        chain so the router routes to us — and let it lapse naturally when the
+        machine goes offline (home nodes aren't 24/7; that's fine, not slashed)."""
+        params = self.chain.genesis.params
+        renew_every = max(1, params.lease_blocks // 2)
+        while self._running:
+            await asyncio.sleep(params.block_time * renew_every)
+            info = self.chain.state.nodes.get(self.address)
+            # Renew when the lease is running low and we're registered + healthy.
+            if info is not None and info.lease_until - self.chain.height <= renew_every:
+                pending = any(
+                    tx.sender == self.address and tx.type == TxType.AVAILABILITY_LEASE.value
+                    for tx in self.mempool.txs.values())
+                if not pending:
+                    await self.submit_tx(self._make_tx(
+                        TxType.AVAILABILITY_LEASE, {"blocks": params.lease_blocks}))
+
     async def _sync_loop(self) -> None:
         params = self.chain.genesis.params
         while self._running:
@@ -927,8 +960,15 @@ class NodeDaemon:
 
     # --------------------------------------------------------- spot checks
     def _my_check_duty(self, receipt_hash: str) -> bool:
-        """Deterministic per-validator sampling of receipts to re-execute."""
-        h = hashlib.sha256(f"{receipt_hash}:{self.address}".encode()).digest()
+        """Per-validator sampling of receipts to re-execute. Seeded with the
+        on-chain RANDAO, which accrues blocks the node could NOT predict when
+        it chose its output_hash — so a node can't grind its receipt to dodge
+        sampling (audit C2). v1 keeps the original node-controllable seed."""
+        if self.chain.genesis.params.version >= 2:
+            seed = f"{receipt_hash}:{self.address}:{self.chain.state.randao}"
+        else:
+            seed = f"{receipt_hash}:{self.address}"
+        h = hashlib.sha256(seed.encode()).digest()
         return (int.from_bytes(h[:4], "big") % 1000) / 1000.0 < self.chain.state.params.spot_check_rate
 
     async def _checker_loop(self) -> None:
@@ -945,22 +985,27 @@ class NodeDaemon:
                 node = state.nodes.get(receipt.node)
                 if node is None:
                     continue
-                verdict = await self._verify_receipt(node.endpoint, receipt)
+                verdict, commitment = await self._verify_receipt(node.endpoint, receipt)
                 if verdict is None:
                     continue  # couldn't fetch the job — don't punish on network noise
-                check = self._make_tx(TxType.SPOT_CHECK, {
-                    "receipt_hash": receipt.receipt_hash,
-                    "ok": verdict,
-                })
-                await self.submit_tx(check)
+                payload = {"receipt_hash": receipt.receipt_hash, "ok": verdict}
+                if self.chain.genesis.params.version >= 2:
+                    # v2 verdicts carry the recomputed commitment so the check
+                    # is independently reproducible — no evidence-free slash.
+                    payload["commitment"] = commitment or sha256_hex(
+                        f"{receipt.receipt_hash}:{verdict}".encode())
+                await self.submit_tx(self._make_tx(TxType.SPOT_CHECK, payload))
 
-    async def _verify_receipt(self, endpoint: str, receipt) -> bool | None:
+    async def _verify_receipt(self, endpoint: str, receipt) -> tuple[bool | None, str]:
+        """Re-execute a receipt's job. Returns (verdict, commitment) where the
+        commitment is the checker's recomputed output hash. verdict None means
+        'could not verify' (network noise / unsupported) — don't punish."""
         try:
             resp = await self.client.get(f"{endpoint}/job/{receipt.request_hash}", timeout=10.0)
             resp.raise_for_status()
             job = resp.json()
         except httpx.HTTPError:
-            return None
+            return None, ""
 
         # Bind the fetched job to the receipt: a cheating node could serve an
         # easy job that reproduces its claimed output while having billed a
@@ -968,47 +1013,44 @@ class NodeDaemon:
         # it's a failed check. (Malformed job → unknown, don't punish on noise.)
         try:
             if _request_hash_from_job(job) != receipt.request_hash:
-                return False
+                return False, ""
         except (KeyError, ValueError, TypeError):
-            return None
+            return None, ""
 
         if job.get("type") == "embed":
             if not self.backend.supports_embeddings:
-                return None
+                return None, ""
             try:
                 result = await asyncio.to_thread(
                     self.backend.embed,
                     EmbedRequest(texts=list(job["texts"]), model_ref=job["model"]),
                 )
             except Exception:
-                return None
+                return None, ""
             rounded = [[round(x, 4) for x in vec] for vec in result.vectors]
+            rc = sha256_hex(canonical_json(rounded))
             return spot_check_verdict(
                 receipt_deterministic=receipt.deterministic,
                 checker_deterministic=self.backend.deterministic,
-                receipt_output_hash=receipt.output_hash,
-                recomputed_output_hash=sha256_hex(canonical_json(rounded)),
+                receipt_output_hash=receipt.output_hash, recomputed_output_hash=rc,
                 receipt_tokens_out=receipt.tokens_out,
-                recomputed_tokens_out=len(result.vectors),
-            )
+                recomputed_tokens_out=len(result.vectors)), rc
 
         if job.get("type") == "image":
             if not self.backend.supports_image_gen:
-                return None
+                return None, ""
             try:
                 result = await asyncio.to_thread(self.backend.generate_image, ImageRequest(
                     prompt=job["prompt"], model_ref=job["model"], width=int(job["width"]),
                     height=int(job["height"]), steps=int(job["steps"]), seed=int(job["seed"])))
             except Exception:
-                return None
+                return None, ""
+            rc = sha256_hex(canonical_json(result.images))
             return spot_check_verdict(
                 receipt_deterministic=receipt.deterministic,
                 checker_deterministic=self.backend.deterministic,
-                receipt_output_hash=receipt.output_hash,
-                recomputed_output_hash=sha256_hex(canonical_json(result.images)),
-                receipt_tokens_out=receipt.tokens_out,
-                recomputed_tokens_out=1,
-            )
+                receipt_output_hash=receipt.output_hash, recomputed_output_hash=rc,
+                receipt_tokens_out=receipt.tokens_out, recomputed_tokens_out=1), rc
 
         request = InferRequest(
             prompt=job["prompt"], model_ref=job["model"],
@@ -1019,12 +1061,11 @@ class NodeDaemon:
         try:
             result = await asyncio.to_thread(self.backend.infer, request)
         except Exception:
-            return None
+            return None, ""
+        rc = sha256_hex(result.text.encode())
         return spot_check_verdict(
             receipt_deterministic=receipt.deterministic,
             checker_deterministic=self.backend.deterministic,
-            receipt_output_hash=receipt.output_hash,
-            recomputed_output_hash=sha256_hex(result.text.encode()),
+            receipt_output_hash=receipt.output_hash, recomputed_output_hash=rc,
             receipt_tokens_out=receipt.tokens_out,
-            recomputed_tokens_out=result.tokens_out,
-        )
+            recomputed_tokens_out=result.tokens_out), rc

@@ -49,7 +49,8 @@ def _cmd_genesis(args: argparse.Namespace) -> int:
         return out
 
     genesis = Genesis(
-        params=ChainParams(chain_id=args.chain_id, dev_fund=args.dev_fund),
+        params=ChainParams(chain_id=args.chain_id, dev_fund=args.dev_fund,
+                           version=int(args.version)),
         alloc=parse_pairs(args.alloc),
         stakes=parse_pairs(args.stake),
     )
@@ -686,6 +687,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--stake", action="append", default=[],
                        metavar="ADDR=DVT", help="genesis validator stake")
     p_gen.add_argument("--chain-id", default="deltav-local-1")
+    p_gen.add_argument("--version", type=int, default=1, choices=[1, 2],
+                       help="reward-mechanism version: 1 (optimistic) or 2 "
+                            "(escrow fee + epoch emission + dispute/lease/verification)")
     p_gen.add_argument("--dev-fund", default="",
                        help="address receiving the dev share of the chain pool")
     p_gen.add_argument("-o", "--output", default="genesis.json")

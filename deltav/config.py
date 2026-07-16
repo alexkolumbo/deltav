@@ -45,6 +45,28 @@ class ChainParams:
     dev_share_bps: int = 3000
     epoch_blocks: int = 600
 
+    # --- reward-mechanism version (v2 = the escrow/epoch/verification model) ---
+    # version 1 = the original optimistic model (alpha-3, unchanged).
+    # version 2 = fee settled once per session (one-time auth nonce), emission
+    #             deferred to epoch and gated on the receipt not failing a
+    #             verification, slashing needs a reproducible commitment +
+    #             min_checkers, plus availability leases and client disputes.
+    version: int = 1
+    # Backends whose (model, temp=0, seed) output is bit-reproducible — the
+    # receipt's `deterministic` is taken from the node's REGISTERED backend,
+    # not a payload flag the payee controls (audit C5).
+    deterministic_backends: list = field(default_factory=lambda: [
+        "mock", "llamacpp", "llamaserver", "asic"])
+    # A client can flag a receipt for a priority re-check within this window.
+    dispute_window: int = 50
+    # Independent commitment-backed FAIL verdicts (or one dispute-confirmed
+    # fail) required before a node is slashed — no single validator can slash.
+    min_checkers: int = 2
+    # A node must hold a live availability lease to be routed to; lease length.
+    lease_blocks: int = 40
+    # Refund the requester this fraction of a confirmed-bad job (clawback).
+    clawback_bps: int = 10_000
+
 
 @dataclass
 class Genesis:
