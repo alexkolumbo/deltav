@@ -164,6 +164,11 @@ class SetupWizard:
             if self.ask_yes("show_others", default=False):
                 self._choose_from_registry(ranked, catalog, reg)
         self.state["model"] = self.spec.ref
+        # The context this hardware can actually hold — the launcher must not
+        # ask llama-server for more, or the engine fails to start on tight fits.
+        from ..router.planner import max_context_for
+        self.state["ctx"] = max_context_for(self.spec, self.device.vram_mb)
+        self.state["vision"] = bool(getattr(self.spec, "vision", False))
 
     def _present_ranked(self, best: dict) -> None:
         self.ok(self.t("recommend", name=best["ref"].split("/")[-1].split("::")[0]))
@@ -298,6 +303,39 @@ class SetupWizard:
             download(url, dest, "model")
             self.ok(self.t("model_ok"))
         self.state["model_path"] = str(dest)
+        if self.state.get("vision"):
+            self._download_mmproj(repo)
+
+    def _download_mmproj(self, repo: str) -> None:
+        """A vision model needs its projector (mmproj) or images won't work —
+        recommending a vision model and launching it text-only would be a lie."""
+        existing = next(self.models_dir.glob("mmproj*"), None)
+        if existing and existing.stat().st_size > 100_000:
+            self.ok(self.t("vision_have"))
+            self.state["mmproj_path"] = str(existing)
+            return
+        try:
+            info = self.client.get(
+                f"https://huggingface.co/api/models/{repo}", timeout=20.0).json()
+            names = [s.get("rfilename", "") for s in info.get("siblings", [])]
+            mm = next((n for n in names
+                       if n.lower().startswith("mmproj") and n.endswith(".gguf")), "")
+        except (httpx.HTTPError, ValueError):
+            mm = ""
+        if not mm:
+            self.warn(self.t("vision_skip"))
+            self.state["mmproj_path"] = ""
+            return
+        dest = self.models_dir / mm
+        self.note(self.t("vision_dl"))
+        try:
+            download(f"https://huggingface.co/{repo}/resolve/main/{mm}", dest, "mmproj")
+        except httpx.HTTPError:
+            self.warn(self.t("vision_skip"))
+            self.state["mmproj_path"] = ""
+            return
+        self.ok(self.t("vision_ok"))
+        self.state["mmproj_path"] = str(dest)
 
     def setup_wallet(self, total: int) -> None:
         self.step(5, total, "s_wallet")
@@ -343,36 +381,48 @@ class SetupWizard:
         self.state["price"] = price
 
     # -------------------------------------------------------------- launcher
-    def write_launcher(self) -> Path:
+    def _engine_ctx(self) -> int:
+        """llama-server context: what the hardware fits (never more — the
+        engine refuses to start), capped at a practical serving default."""
+        ctx = int(self.state.get("ctx") or 0)
+        if ctx <= 0:
+            return 4096
+        return max(2048, min(8192, (ctx // 1024) * 1024))
+
+    def _engine_args(self) -> list[str]:
+        args = ["-m", self.state.get("model_path", ""),
+                "--host", "127.0.0.1", "--port", "8085",
+                "-ngl", "99", "-c", str(self._engine_ctx())]
+        if self.state.get("mmproj_path"):
+            args += ["--mmproj", self.state["mmproj_path"]]
+        return args
+
+    def _node_args(self) -> list[str]:
+        # connect=auto: the node works out its own public address (direct if
+        # reachable, else through a relay) — external access with zero config.
         s = self.state
-        model, server = s.get("model", ""), s.get("server", "")
-        model_path = s.get("model_path", "")
+        return ["--genesis", s.get("genesis", ""), "--wallet", s.get("wallet", ""),
+                "--host", "0.0.0.0", "--port", "9100",
+                "--backend", "llamaserver", "--model", s.get("model", ""),
+                "--data-dir", str(self.home / "data"),
+                "--price", str(s.get("price", 0)),
+                "--peer", s.get("seed", ""), "--connect", "auto"]
+
+    @staticmethod
+    def _sh(args: list[str]) -> str:
+        return " ".join(f'"{a}"' if (" " in a or "\\" in a) else a for a in args)
+
+    def write_launcher(self) -> Path:
+        server = self.state.get("server", "")
+        engine = self._sh([server] + self._engine_args())
+        node = self._sh(["python", "-m", "deltav.cli", "node"] + self._node_args())
         if os.name == "nt":
             script = self.home / "start-node.bat"
-            body = (
-                "@echo off\r\n"
-                f'start "llama-server" "{server}" -m "{model_path}" '
-                "--host 127.0.0.1 --port 8085 -ngl 99 -c 8192\r\n"
-                "timeout /t 8 >nul\r\n"
-                f'python -m deltav.cli node --genesis "{s.get("genesis","")}" '
-                f'--wallet "{s.get("wallet","")}" --host 0.0.0.0 --port 9100 '
-                f'--backend llamaserver --model "{model}" '
-                f'--data-dir "{self.home / "data"}" --price {s.get("price",0)} '
-                f'--peer {s.get("seed","")}\r\n'
-            )
+            body = (f'@echo off\r\nstart "llama-server" {engine}\r\n'
+                    f"timeout /t 8 >nul\r\n{node}\r\n")
         else:
             script = self.home / "start-node.sh"
-            body = (
-                "#!/bin/sh\n"
-                f'"{server}" -m "{model_path}" --host 127.0.0.1 --port 8085 '
-                "-ngl 99 -c 8192 &\n"
-                "sleep 8\n"
-                f'python -m deltav.cli node --genesis "{s.get("genesis","")}" '
-                f'--wallet "{s.get("wallet","")}" --host 0.0.0.0 --port 9100 '
-                f'--backend llamaserver --model "{model}" '
-                f'--data-dir "{self.home / "data"}" --price {s.get("price",0)} '
-                f'--peer {s.get("seed","")}\n'
-            )
+            body = f"#!/bin/sh\n{engine} &\nsleep 8\n{node}\n"
         script.write_text(body, encoding="utf-8")
         if os.name != "nt":
             os.chmod(script, 0o755)
@@ -393,8 +443,7 @@ class SetupWizard:
             return
         self.note(self.t("starting"))
         llama = subprocess.Popen(
-            [s["server"], "-m", s["model_path"], "--host", "127.0.0.1",
-             "--port", "8085", "-ngl", "99", "-c", "8192"],
+            [s["server"]] + self._engine_args(),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if not self._wait_health("http://127.0.0.1:8085/health", 180):
             self.warn(self.t("engine_slow"))
@@ -403,12 +452,7 @@ class SetupWizard:
         self.ok(self.t("engine_up"))
         env = dict(os.environ, LLAMA_SERVER_URL="http://127.0.0.1:8085")
         subprocess.Popen(
-            [sys.executable, "-m", "deltav.cli", "node",
-             "--genesis", s["genesis"], "--wallet", s["wallet"],
-             "--host", "0.0.0.0", "--port", "9100",
-             "--backend", "llamaserver", "--model", s["model"],
-             "--data-dir", str(self.home / "data"),
-             "--price", str(s.get("price", 0)), "--peer", s.get("seed", "")],
+            [sys.executable, "-m", "deltav.cli", "node"] + self._node_args(),
             env=env)
         if not self._wait_health("http://127.0.0.1:9100/health", 60):
             self.warn(self.t("node_slow"))

@@ -211,4 +211,15 @@ class ModelRegistry:
             })
         rows.sort(key=lambda r: (r["served"], round(r["quality"], 2), r["max_context"]),
                   reverse=True)
-        return rows[:top]
+        # The catalog and the HF-discovered DB often hold the same model from
+        # different uploaders (Qwen/… vs bartowski/…) — showing both as #7 and
+        # #8 only confuses the wizard user. Keep the best-ranked copy.
+        seen: set[tuple] = set()
+        unique = []
+        for r in rows:
+            key = (r["repo"].split("/")[-1].lower(), (r["quant"] or "").lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(r)
+        return unique[:top]

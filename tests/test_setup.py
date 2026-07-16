@@ -146,6 +146,8 @@ def test_launcher_script_is_runnable(tmp_path):
         "wallet": str(tmp_path / "node.wallet.json"),
         "seed": "http://seed:9100",
         "price": 9,
+        "ctx": 7168,
+        "mmproj_path": str(tmp_path / "mmproj-F16.gguf"),
     }
     script = wiz.write_launcher()
     assert script.exists()
@@ -154,6 +156,45 @@ def test_launcher_script_is_runnable(tmp_path):
     assert "deltav.cli node" in body
     assert "--price 9" in body
     assert "http://seed:9100" in body
+    # External access is automatic — a wizard node must not stay LAN-only.
+    assert "--connect auto" in body
+    # Engine context respects the computed fit (7168 -> 7168, never 8192).
+    assert "-c 7168" in body and "-c 8192" not in body
+    # A vision model launches with its projector, or images silently fail.
+    assert "--mmproj" in body and "mmproj-F16.gguf" in body
+
+
+def test_launcher_ctx_capped_and_defaulted(tmp_path):
+    wiz = SetupWizard(home=tmp_path)
+    base = {
+        "server": "llama-server", "model": "o/r::m.gguf", "model_path": "m.gguf",
+        "genesis": "g.json", "wallet": "w.json", "seed": "http://s:9100", "price": 1,
+    }
+    wiz.state = dict(base, ctx=131072)          # huge fit -> practical cap
+    assert "-c 8192" in wiz.write_launcher().read_text(encoding="utf-8")
+    wiz.state = dict(base, ctx=2500)            # rounded down to 1024 multiple
+    assert "-c 2048" in wiz.write_launcher().read_text(encoding="utf-8")
+    wiz.state = dict(base)                      # unknown -> safe default
+    body = wiz.write_launcher().read_text(encoding="utf-8")
+    assert "-c 4096" in body and "--mmproj" not in body
+
+
+def test_rank_dedupes_same_model_from_different_uploaders():
+    from deltav.registry import ModelRegistry
+    from deltav.registry.registry import DiscoveredModel
+    from deltav.router import Catalog
+
+    catalog = Catalog()
+    reg = ModelRegistry(catalog=catalog)
+    # A HF-discovered copy of a curated catalog model (different uploader).
+    dup_repo = next(s for s in catalog.specs if s.kind == "chat" and s.params_b <= 8)
+    reg.discovered[f"bartowski-dup/{dup_repo.repo_id.split('/')[-1]}::x.gguf"] = DiscoveredModel(
+        repo_id=f"bartowski-dup/{dup_repo.repo_id.split('/')[-1]}",
+        filename="x.gguf", params_b=dup_repo.params_b, quant=dup_repo.quant,
+        file_mb=dup_repo.file_mb - 100, downloads=10, kind="chat")
+    ranked = reg.rank(24_000, kind="chat", top=50)
+    names = [(r["repo"].split("/")[-1].lower(), (r["quant"] or "").lower()) for r in ranked]
+    assert len(names) == len(set(names)), "duplicate model shown twice in the wizard list"
 
 
 def test_connect_network_saves_genesis(tmp_path):
