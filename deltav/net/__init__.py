@@ -19,7 +19,7 @@ and speaks only HTTP, so it traverses any proxy and needs no WebSocket.
 from __future__ import annotations
 
 from .reach import ReachResult, check_direct, mount_reach, probe_public_ip
-from .relay import RelayClient, RelayServer
+from .relay import RelayClient, RelayServer, discover_relay
 
 __all__ = [
     "ReachResult",
@@ -28,4 +28,5 @@ __all__ = [
     "probe_public_ip",
     "RelayClient",
     "RelayServer",
+    "discover_relay",
 ]

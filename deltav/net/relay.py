@@ -172,6 +172,34 @@ class RelayServer:
                             headers=headers)
 
 
+async def discover_relay(client: httpx.AsyncClient, seeds) -> str:
+    """Find a usable relay: check each seed's own /relay/info, and any
+    relay-capable endpoints its /chain/nodes advertises. Returns the relay's
+    public base URL, or "" if none is available."""
+    urls: list[str] = list(seeds)
+    for seed in seeds:
+        try:
+            resp = await client.get(f"{seed.rstrip('/')}/chain/nodes", timeout=5.0)
+            resp.raise_for_status()
+        except httpx.HTTPError:
+            continue
+        for node in resp.json().get("nodes", []):
+            hw = node.get("hardware") or {}
+            ep = node.get("endpoint", "")
+            if hw.get("relay") and ep and ep not in urls:
+                urls.append(ep)
+    for url in urls:
+        try:
+            resp = await client.get(f"{url.rstrip('/')}/relay/info", timeout=5.0)
+            resp.raise_for_status()
+            data = resp.json()
+        except httpx.HTTPError:
+            continue
+        if data.get("relay") and data.get("origins", 0) < data.get("capacity", 1):
+            return data.get("public_url") or url.rstrip("/")
+    return ""
+
+
 # --------------------------------------------------------------- relay client
 class RelayClient:
     """Runs inside a NAT'd node: keeps an outbound tunnel to a relay open

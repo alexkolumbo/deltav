@@ -42,10 +42,13 @@ from ..overlay import (
     to_openai_tool_calls,
 )
 from ..companion import CompanionAgent, UserMemory, resolve_identity
+from ..net import RelayClient, check_direct, discover_relay, mount_reach, probe_public_ip
+from ..net.security import install_guards
 from ..overlay.memory import VectorMemory
 from ..overlay.tools import ToolSpec
 from ..router import Catalog, RouteError, SmartRouter
 from ..router.catalog import estimate_vram_mb
+from .portal import mount_portal
 
 
 def extract_images(messages: list[dict]) -> list[str]:
@@ -88,12 +91,22 @@ class GatewayDaemon:
         memory_path: str | None = None,
         keys_path: str | None = None,
         require_keys: bool = False,
+        connect: str = "local",
+        relay_via: str = "",
+        public_url: str = "",
+        port: int = 9000,
     ):
         self.keypair = keypair
         self.node_urls = node_urls
         self.params = params or ChainParams()
         self.client = client or httpx.AsyncClient()
         self._owns_client = client is None
+        # External connectivity for the gateway itself (portal, /chat, API).
+        self.connect = connect
+        self.relay_via = relay_via
+        self.port = port
+        self.public_origin = public_url    # resolved public base URL (relay or direct)
+        self.relay_client = None
         self.catalog = catalog or Catalog()
         self.router = SmartRouter(
             catalog=self.catalog,
@@ -111,6 +124,47 @@ class GatewayDaemon:
         self.keys = KeyStore(keys_path)
         self.require_keys = require_keys
         self.app = self._build_app()
+
+    @property
+    def address(self) -> str:
+        return self.keypair.address
+
+    @property
+    def chain_id(self) -> str:
+        return self.params.chain_id
+
+    # -------------------------------------------------------- connectivity
+    async def start(self) -> None:
+        """Make the gateway (portal + /chat + API) reachable externally,
+        reusing the same connectivity layer as nodes: direct if reachable,
+        else an outbound tunnel through a relay."""
+        if self.connect == "local" and not self.relay_via:
+            return
+        seeds = self.node_urls
+        if self.connect in ("auto", "direct"):
+            ip = await probe_public_ip(self.client, seeds)
+            if ip:
+                candidate = f"http://{ip}:{self.port}"
+                if self.connect == "direct" or await check_direct(
+                        self.client, seeds, candidate, self.chain_id):
+                    self.public_origin = candidate
+                    return
+            if self.connect == "direct":
+                return
+        relay = self.relay_via or await discover_relay(self.client, seeds)
+        if not relay:
+            return
+        client = RelayClient(self.keypair, self.app, relay, self.client)
+        try:
+            self.public_origin = await client.start()
+            self.relay_client = client
+        except httpx.HTTPError:
+            self.relay_client = None
+
+    async def stop(self) -> None:
+        if self.relay_client is not None:
+            await self.relay_client.stop()
+            self.relay_client = None
 
     # ------------------------------------------------------------- billing
     async def _requester_from(self, request: Request) -> tuple[KeyPair, KeyRecord | None]:
@@ -290,10 +344,16 @@ class GatewayDaemon:
 
     def _build_app(self) -> FastAPI:
         app = FastAPI(title="Delta V gateway", version="0.1.0")
+        # Internet-facing hardening + reachability self-test (so the gateway
+        # can be relay-reached like a node) + the public portal.
+        install_guards(app)
+        mount_reach(app, self)
+        mount_portal(app, self)
 
         @app.get("/health")
         async def health() -> dict:
-            return {"gateway": self.keypair.address, "nodes": self.node_urls}
+            return {"gateway": self.keypair.address, "nodes": self.node_urls,
+                    "public_origin": self.public_origin}
 
         @app.get("/chat", response_class=HTMLResponse)
         async def chat_ui() -> str:

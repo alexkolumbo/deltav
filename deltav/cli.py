@@ -159,13 +159,20 @@ def _cmd_gateway(args: argparse.Namespace) -> int:
     daemon = GatewayDaemon(keypair, node_urls=args.node, params=params,
                            memory_path=args.memory_file or None,
                            keys_path=args.keys_file or None,
-                           require_keys=args.require_keys)
+                           require_keys=args.require_keys,
+                           connect=args.connect, relay_via=args.relay_via,
+                           public_url=args.public_url, port=args.port)
     print(f"gateway {keypair.address} on http://{args.host}:{args.port} -> nodes {args.node}")
+    print(f"portal   : http://{args.host}:{args.port}/  (chat /chat, explorer /explorer, metrics /metrics)")
 
     async def run() -> None:
         server = uvicorn.Server(uvicorn.Config(
             daemon.app, host=args.host, port=args.port, log_level="warning"))
+        await daemon.start()
+        if daemon.public_origin:
+            print(f"external : {daemon.public_origin}")
         await server.serve()
+        await daemon.stop()
         await daemon.close()
 
     asyncio.run(run())
@@ -747,6 +754,13 @@ def build_parser() -> argparse.ArgumentParser:
                       help="persist API keys (custodial billing wallets) here")
     p_gw.add_argument("--require-keys", action="store_true",
                       help="reject requests without a funded dvk_ API key")
+    p_gw.add_argument("--connect", default="local",
+                      choices=["local", "auto", "direct", "relay"],
+                      help="expose the portal/chat/API externally: auto (direct or relay), "
+                           "relay (tunnel through a public node), direct, or local")
+    p_gw.add_argument("--relay-via", default="", help="force tunneling through this relay")
+    p_gw.add_argument("--public-url", default="",
+                      help="the gateway's externally reachable base URL (overrides detection)")
     p_gw.set_defaults(func=_cmd_gateway)
 
     p_keys = sub.add_parser("keys", help="gateway API keys (billing wallets)")

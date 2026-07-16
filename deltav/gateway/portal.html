@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delta V — network portal</title>
+<style>
+  :root{
+    --bg:#0b0d10; --panel:#12151a; --panel2:#171b22; --line:#232833;
+    --ink:#e8ecf2; --dim:#8a93a3; --accent:#ff7a1a; --ok:#39d98a; --warn:#ffcc4d; --bad:#ff5c5c;
+    --mono:"SFMono-Regular",ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  header{position:sticky;top:0;z-index:10;background:rgba(11,13,16,.9);
+    backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+  .bar{max-width:1120px;margin:0 auto;display:flex;align-items:center;gap:18px;padding:12px 18px}
+  .logo{font-weight:700;font-size:19px;letter-spacing:.3px}
+  .logo b{color:var(--accent)}
+  nav{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
+  nav button{background:transparent;border:0;color:var(--dim);font:inherit;font-weight:600;
+    padding:7px 12px;border-radius:8px;cursor:pointer}
+  nav button:hover{color:var(--ink);background:var(--panel)}
+  nav button.on{color:var(--ink);background:var(--panel2);box-shadow:inset 0 -2px 0 var(--accent)}
+  main{max-width:1120px;margin:0 auto;padding:22px 18px 60px}
+  .tab{display:none}
+  .tab.on{display:block;animation:f .2s ease}
+  @keyframes f{from{opacity:0;transform:translateY(4px)}to{opacity:1}}
+  h2{font-size:15px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:26px 0 12px}
+  .hero{display:flex;flex-direction:column;gap:6px;padding:8px 0 4px}
+  .hero h1{margin:0;font-size:30px}
+  .hero .sub{color:var(--dim)}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;
+    background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:3px 10px;color:var(--dim)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .grid{display:grid;gap:12px}
+  .stats{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .stat .k{color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+  .stat .v{font-size:26px;font-weight:700;margin-top:2px}
+  .stat .v small{font-size:13px;color:var(--dim);font-weight:500}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .chip{font-family:var(--mono);font-size:12px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:7px;padding:3px 8px}
+  .links{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}
+  .btn{display:inline-block;background:var(--accent);color:#160a00;font-weight:700;padding:9px 15px;
+    border-radius:10px}
+  .btn.ghost{background:var(--panel2);color:var(--ink);border:1px solid var(--line)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:12px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+  tr:last-child td{border-bottom:0}
+  td.mono,.mono{font-family:var(--mono);font-size:12.5px}
+  .badge{font-size:11px;font-weight:700;padding:2px 7px;border-radius:6px;text-transform:uppercase;letter-spacing:.03em}
+  .b-direct{background:rgba(57,217,138,.14);color:var(--ok)}
+  .b-relay{background:rgba(255,122,26,.16);color:var(--accent)}
+  .b-relayhost{background:rgba(255,204,77,.16);color:var(--warn)}
+  .b-off{background:rgba(255,92,92,.14);color:var(--bad)}
+  .loadbar{height:6px;background:var(--panel2);border-radius:4px;overflow:hidden;min-width:70px}
+  .loadbar span{display:block;height:100%;background:linear-gradient(90deg,var(--ok),var(--warn),var(--bad))}
+  .nodecard{display:flex;flex-direction:column;gap:8px}
+  .nodecard .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .kv{display:flex;justify-content:space-between;font-size:12.5px;color:var(--dim)}
+  .kv b{color:var(--ink);font-weight:600}
+  .seg{display:flex;gap:4px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:3px;width:fit-content}
+  .seg button{background:transparent;border:0;color:var(--dim);font:inherit;font-weight:600;padding:5px 11px;border-radius:6px;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#160a00}
+  pre{background:#0f1216;border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow-x:auto;
+    font-family:var(--mono);font-size:12.5px;margin:8px 0;position:relative}
+  .copy{position:absolute;top:8px;right:8px;background:var(--panel2);border:1px solid var(--line);color:var(--dim);
+    font:inherit;font-size:11px;padding:3px 8px;border-radius:6px;cursor:pointer}
+  .copy:hover{color:var(--ink)}
+  .muted{color:var(--dim)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  label.sw{display:inline-flex;align-items:center;gap:7px;color:var(--dim);font-size:13px;cursor:pointer}
+  .empty{color:var(--dim);padding:18px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="logo"><b>Δ</b>V <span class="muted" style="font-weight:500">network</span></div>
+    <nav id="nav">
+      <button data-tab="overview" class="on">Overview</button>
+      <button data-tab="explorer">Explorer</button>
+      <button data-tab="monitor">Monitor</button>
+      <button data-tab="run">Run a node</button>
+      <button data-tab="connect">Connect</button>
+    </nav>
+  </div>
+</header>
+<main>
+
+  <!-- OVERVIEW -->
+  <section class="tab on" id="tab-overview">
+    <div class="hero">
+      <div class="row"><span class="pill"><span class="dot" id="livedot"></span><span id="chainid">…</span></span></div>
+      <h1>A decentralized AI network you can watch, join and use.</h1>
+      <div class="sub">Open-source models routed across GPU nodes, paid per token on-chain, honesty spot-checked.</div>
+    </div>
+    <div class="grid stats" id="ovstats"></div>
+    <h2>Models live on the network</h2>
+    <div class="chips" id="ovmodels"><span class="muted">loading…</span></div>
+    <div class="links">
+      <a class="btn" href="/chat">Open chat →</a>
+      <a class="btn ghost" data-goto="run">Run a node</a>
+      <a class="btn ghost" data-goto="connect">Connect a client</a>
+      <a class="btn ghost" href="/metrics">/metrics</a>
+    </div>
+  </section>
+
+  <!-- EXPLORER -->
+  <section class="tab" id="tab-explorer">
+    <h2>Recent blocks</h2>
+    <div class="scroll"><table id="blocks"><thead><tr>
+      <th>Height</th><th>Proposer</th><th>Txs</th><th>Hash</th></tr></thead><tbody></tbody></table></div>
+    <h2>Recent inference receipts</h2>
+    <div class="scroll"><table id="receipts"><thead><tr>
+      <th>Node</th><th>Model</th><th>Tokens</th><th>Paid</th><th>Check</th></tr></thead><tbody></tbody></table></div>
+    <h2>Nodes &amp; connectivity</h2>
+    <div class="scroll"><table id="expnodes"><thead><tr>
+      <th>Node</th><th>Conn</th><th>Device</th><th>Models</th><th>Rep</th><th>Price</th><th>State</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <!-- MONITOR -->
+  <section class="tab" id="tab-monitor">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:8px 0">Live node health</h2>
+      <label class="sw"><input type="checkbox" id="auto" checked> auto-refresh (5s)</label>
+    </div>
+    <div class="grid stats" id="monagg"></div>
+    <div class="grid" id="moncards" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));margin-top:12px"></div>
+  </section>
+
+  <!-- RUN A NODE -->
+  <section class="tab" id="tab-run">
+    <div class="hero"><h1>Run a node — earn DVT for serving inference</h1>
+      <div class="sub" id="runhint">A bilingual wizard takes a bare machine to a live, earning node. No manual networking — external access is automatic.</div></div>
+    <div class="seg" id="osseg">
+      <button data-os="linux" class="on">Linux / macOS</button>
+      <button data-os="win">Windows</button>
+      <button data-os="py">Have Python</button>
+    </div>
+    <div id="oscmd"></div>
+    <div class="card" style="margin-top:12px">
+      <div class="kv"><span>External access</span><b>automatic (direct or relay, zero port-forward)</b></div>
+      <div class="kv"><span>Pricing</span><b>electricity + 50% margin — <span class="mono">deltav price</span></b></div>
+      <div class="kv"><span>Full guide</span><b><a href="https://github.com/alexkolumbo/deltav/blob/main/docs/HOSTING.md">HOSTING.md</a> · <a href="https://github.com/alexkolumbo/deltav/blob/main/docs/HOSTING.ru.md">RU</a></b></div>
+    </div>
+  </section>
+
+  <!-- CONNECT -->
+  <section class="tab" id="tab-connect">
+    <div class="hero"><h1>Connect a client</h1>
+      <div class="sub">Point any OpenAI / Ollama / Anthropic tool at this gateway. Model is always <span class="mono">auto</span>.</div></div>
+    <div class="seg" id="toolseg">
+      <button data-tool="web" class="on">Web</button>
+      <button data-tool="openai">OpenAI</button>
+      <button data-tool="ollama">Ollama</button>
+      <button data-tool="anthropic">Anthropic</button>
+      <button data-tool="cli">CLI</button>
+    </div>
+    <div id="toolbody"></div>
+    <div class="card" style="margin-top:12px">
+      <div class="kv"><span>Need a key?</span><b>optional on LAN — <span class="mono">POST /v1/keys</span> mints a dvk_ wallet</b></div>
+      <div class="kv"><span>Full guide</span><b><a href="https://github.com/alexkolumbo/deltav/blob/main/docs/CLIENT.md">CLIENT.md</a> · <a href="https://github.com/alexkolumbo/deltav/blob/main/docs/CLIENT.ru.md">RU</a></b></div>
+    </div>
+  </section>
+
+</main>
+<script>
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const dvt=u=>(u/1e6), fmt=n=>Number(n||0).toLocaleString('en-US'),
+      fdvt=u=>dvt(u).toLocaleString('en-US',{maximumFractionDigits:2}),
+      short=(a,n=10)=>a?a.slice(0,n)+'…':'—';
+let CFG={origin:location.origin, repo:'https://github.com/alexkolumbo/deltav'};
+
+async function getJSON(p){try{const r=await fetch(p);if(!r.ok)throw 0;return await r.json();}catch(e){return null;}}
+
+/* ---- tabs ---- */
+function show(tab){
+  $$('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
+  $$('.tab').forEach(s=>s.classList.toggle('on',s.id==='tab-'+tab));
+  if(location.hash.slice(1)!==tab) history.replaceState(null,'','#'+tab);
+  if(tab==='explorer') loadExplorer();
+  if(tab==='monitor') loadMonitor();
+}
+$('#nav').addEventListener('click',e=>{if(e.target.dataset.tab)show(e.target.dataset.tab);});
+document.addEventListener('click',e=>{const g=e.target.dataset&&e.target.dataset.goto;if(g){e.preventDefault();show(g);}});
+
+/* ---- overview ---- */
+function statCard(k,v,sub){return `<div class="card stat"><div class="k">${k}</div><div class="v">${v}${sub?` <small>${sub}</small>`:''}</div></div>`;}
+async function loadOverview(){
+  const o=await getJSON('/portal/overview'); if(!o)return;
+  $('#chainid').textContent=o.chain_id||'delta v';
+  $('#livedot').style.background=o.nodes_online?'var(--ok)':'var(--bad)';
+  $('#ovstats').innerHTML=[
+    statCard('Height',fmt(o.height)),
+    statCard('Nodes online',`${o.nodes_online}`,`/ ${o.nodes_total}`),
+    statCard('Models',fmt((o.models_served||[]).length)),
+    statCard('Validators',fmt(o.validators)),
+    statCard('Relays',fmt(o.relays)),
+    statCard('Tokens served',fmt(o.tokens_served_total)),
+    statCard('Pool',fdvt(o.pool_udvt),'DVT'),
+    statCard('Receipts',fmt(o.receipts)),
+  ].join('');
+  const m=o.models_served||[];
+  $('#ovmodels').innerHTML=m.length?m.map(x=>`<span class="chip">${x.split('::')[0].split('/').pop()}</span>`).join(''):'<span class="muted">no models live right now</span>';
+}
+
+/* ---- explorer ---- */
+function connBadge(c){const map={direct:['b-direct','direct'],relay:['b-relay','via relay'],'relay-host':['b-relayhost','relay host']};const[b,t]=map[c]||['b-direct',c];return `<span class="badge ${b}">${t}</span>`;}
+async function loadExplorer(){
+  const [b,r,o]=await Promise.all([getJSON('/portal/blocks'),getJSON('/portal/receipts'),getJSON('/portal/overview')]);
+  const bt=$('#blocks tbody');
+  bt.innerHTML=(b&&b.headers||[]).slice(0,25).map(h=>`<tr><td class="mono">${fmt(h.height)}</td><td class="mono">${short(h.proposer||h.pubkey)}</td><td>${h.tx_count??h.txs??'·'}</td><td class="mono">${short(h.hash,12)}</td></tr>`).join('')||'<tr><td colspan=4 class="empty">no blocks</td></tr>';
+  const rt=$('#receipts tbody');
+  rt.innerHTML=(r&&r.receipts||[]).slice(0,25).map(x=>`<tr><td class="mono">${short(x.node)}</td><td>${(x.model||'').split('::')[0].split('/').pop()}</td><td>${fmt(x.tokens)}</td><td class="mono">${fdvt(x.price_paid)}</td><td>${x.checked?(x.check_ok?'<span class="badge b-direct">ok</span>':'<span class="badge b-off">fail</span>'):'<span class="muted">—</span>'}</td></tr>`).join('')||'<tr><td colspan=5 class="empty">no receipts yet</td></tr>';
+  const nt=$('#expnodes tbody');
+  nt.innerHTML=((o&&o.nodes)||[]).map(n=>`<tr><td class="mono">${short(n.address)}</td><td>${connBadge(n.connectivity)}</td><td>${n.vendor} ${n.device||''}</td><td>${(n.models||[]).map(m=>m.split('::')[0].split('/').pop()).join(', ')||'—'}</td><td>${n.reputation}</td><td class="mono">${n.price_per_token}</td><td>${n.jailed?'<span class="badge b-off">jailed</span>':(n.alive?'<span class="badge b-direct">live</span>':'<span class="badge b-off">down</span>')}</td></tr>`).join('')||'<tr><td colspan=7 class="empty">no nodes</td></tr>';
+}
+
+/* ---- monitor ---- */
+let monTimer=null;
+async function loadMonitor(){
+  const o=await getJSON('/portal/overview'); if(!o)return;
+  $('#monagg').innerHTML=[
+    statCard('Online',`${o.nodes_online}`,`/ ${o.nodes_total}`),
+    statCard('Direct',fmt(o.direct_nodes)),
+    statCard('Via relay',fmt(o.relayed_nodes)),
+    statCard('Relays',fmt(o.relays)),
+    statCard('Jobs done',fmt(o.jobs_done_total)),
+    statCard('Unchecked',fmt(o.unchecked_receipts)),
+  ].join('');
+  $('#moncards').innerHTML=(o.nodes||[]).map(n=>{
+    const load=Math.round((n.load||0)*100);
+    const st=n.jailed?'<span class="badge b-off">jailed</span>':(n.alive?'<span class="badge b-direct">live</span>':'<span class="badge b-off">down</span>');
+    return `<div class="card nodecard">
+      <div class="top"><span class="mono">${short(n.address)}</span>${st}</div>
+      <div class="muted" style="font-size:12.5px">${n.vendor} ${n.device||''} · ${n.vram_mb?fmt(n.vram_mb)+' MB':'—'} ${connBadge(n.connectivity)}</div>
+      <div class="loadbar"><span style="width:${load}%"></span></div>
+      <div class="kv"><span>load</span><b>${load}% · ${n.active_jobs}/${n.max_parallel_jobs} jobs</b></div>
+      <div class="kv"><span>height / peers</span><b>${fmt(n.height)} · ${n.peers}</b></div>
+      <div class="kv"><span>tokens · rep</span><b>${fmt(n.tokens_served)} · ${n.reputation}</b></div>
+      <div class="kv"><span>price · earned</span><b>${n.price_per_token} · ${fdvt(n.earnings_udvt)} DVT</b></div>
+      <div class="kv"><span>models</span><b>${(n.models||[]).map(m=>m.split('::')[0].split('/').pop()).join(', ')||'—'}</b></div>
+    </div>`;}).join('')||'<div class="empty">no nodes registered</div>';
+}
+$('#auto').addEventListener('change',e=>{if(e.target.checked)startMon();else stopMon();});
+function startMon(){stopMon();monTimer=setInterval(()=>{if($('#tab-monitor').classList.contains('on'))loadMonitor();},5000);}
+function stopMon(){if(monTimer)clearInterval(monTimer);monTimer=null;}
+
+/* ---- run a node ---- */
+const OS={
+  linux:`# Linux / macOS — one command\ncurl -fsSL ${'https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.sh'} | sh`,
+  win:`# Windows (PowerShell)\nirm https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.ps1 | iex`,
+  py:`# Already have Python 3.11+\npip install "deltav-network[gpu,hub] @ git+https://github.com/alexkolumbo/deltav"\ndeltav join --seed ${'ORIGIN'}   # external access auto: direct if reachable, else relay`,
+};
+function block(txt){return `<pre><button class="copy">copy</button>${txt.replace(/ORIGIN/g,CFG.origin).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}</pre>`;}
+function renderOS(os){$('#oscmd').innerHTML=block(OS[os]);}
+$('#osseg').addEventListener('click',e=>{if(!e.target.dataset.os)return;$$('#osseg button').forEach(b=>b.classList.toggle('on',b===e.target));renderOS(e.target.dataset.os);});
+
+/* ---- connect ---- */
+function tool(t){
+  const o=CFG.origin;
+  const T={
+    web:`Open the chat straight in your browser — installable as an app:\n\n${o}/chat`,
+    openai:`# OpenAI-compatible (goose, opencode, openai SDK, Hermes)\nbase_url = ${o}/v1\napi_key  = dvk_…          # any string on an open LAN gateway\nmodel    = "auto"`,
+    ollama:`# Ollama-compatible (Open WebUI, LangChain)\nOLLAMA_HOST=${o}\ncurl ${o}/api/chat -d '{"model":"auto","messages":[{"role":"user","content":"hi"}]}'`,
+    anthropic:`# Anthropic SDK\nbase_url = ${o}\nmodel    = "auto"`,
+    cli:`pip install "deltav-network @ git+https://github.com/alexkolumbo/deltav"\ndeltav connect --url ${o} --key dvk_…\ndeltav repl        # or: deltav serve  (zero-config localhost proxy)`,
+  };
+  const body=T[t]; const isweb=t==='web';
+  $('#toolbody').innerHTML = isweb
+    ? `<div class="card"><p>${body.split('\n\n')[0]}</p><a class="btn" href="/chat">Open ${o}/chat →</a></div>`
+    : block(body);
+}
+$('#toolseg').addEventListener('click',e=>{if(!e.target.dataset.tool)return;$$('#toolseg button').forEach(b=>b.classList.toggle('on',b===e.target));tool(e.target.dataset.tool);});
+
+/* ---- copy buttons ---- */
+document.addEventListener('click',e=>{
+  if(!e.target.classList.contains('copy'))return;
+  const pre=e.target.closest('pre'); const txt=pre.textContent.replace(/^copy/,'');
+  navigator.clipboard.writeText(txt.trim()).then(()=>{e.target.textContent='copied';setTimeout(()=>e.target.textContent='copy',1200);});
+});
+
+/* ---- boot ---- */
+(async()=>{
+  const c=await getJSON('/portal/config'); if(c)CFG=c;
+  renderOS('linux'); tool('web'); loadOverview();
+  const start=location.hash.slice(1); if(['explorer','monitor','run','connect'].includes(start))show(start);
+  startMon();
+  setInterval(loadOverview,10000);
+})();
+</script>
+</body>
+</html>

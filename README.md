@@ -83,6 +83,16 @@ curl http://<gw>:9000/api/chat \
 per-tool recipes and the `DeltaVClient` SDK in
 [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
+### The portal
+
+The gateway serves a live web **portal** at `/` — one page for the whole
+network: an **explorer** (blocks, receipts, nodes, direct-vs-relay topology),
+**monitoring** (per-node health + a Prometheus `/metrics` endpoint), and
+one-click **onboarding** for hosts and clients (copy-paste commands, live
+stats, the right base URL). The gateway can ride a relay like any node
+(`deltav gateway --connect auto`), so the portal, `/chat` and the API are
+reachable from anywhere with no port-forwarding.
+
 ### Delta V's own client tools
 
 ```bash
