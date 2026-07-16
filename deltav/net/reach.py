@@ -6,6 +6,7 @@ STUN/echo service, using only the node's own HTTP surface.
 """
 from __future__ import annotations
 
+import ipaddress
 import secrets
 from dataclasses import dataclass
 
@@ -57,7 +58,13 @@ class ReachResult:
 
 
 async def probe_public_ip(client: httpx.AsyncClient, peers) -> str:
-    """Ask peers what public IP they see us coming from (first answer wins)."""
+    """Ask peers what public IP they see us coming from (first answer wins).
+
+    Loopback answers are ignored: a same-host peer sees us as 127.0.0.1,
+    which can never be a valid cross-host endpoint — without this filter
+    `connect=auto` behind a localhost seed would false-positive as
+    "directly reachable" at 127.0.0.1.
+    """
     for peer in peers:
         try:
             resp = await client.get(f"{peer.rstrip('/')}/whoami", timeout=5.0)
@@ -65,8 +72,14 @@ async def probe_public_ip(client: httpx.AsyncClient, peers) -> str:
             ip = str(resp.json().get("ip", "")).strip()
         except httpx.HTTPError:
             continue
-        if ip:
-            return ip
+        if not ip:
+            continue
+        try:
+            if ipaddress.ip_address(ip).is_loopback:
+                continue
+        except ValueError:
+            continue
+        return ip
     return ""
 
 

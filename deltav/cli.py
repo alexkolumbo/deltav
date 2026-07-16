@@ -179,6 +179,20 @@ def _cmd_gateway(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_relay(args: argparse.Namespace) -> int:
+    """Standalone circuit relay: run on any public machine so NAT'd nodes
+    and gateways become reachable network-wide."""
+    import uvicorn
+
+    from .net.relay import build_relay_app
+
+    public = args.public_url or f"http://{args.host}:{args.port}"
+    app = build_relay_app(public, max_origins=args.max_origins)
+    print(f"relay on http://{args.host}:{args.port}  public: {public}")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
 def _cmd_sim(args: argparse.Namespace) -> int:
     from .sim import run_simulation
 
@@ -762,6 +776,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_gw.add_argument("--public-url", default="",
                       help="the gateway's externally reachable base URL (overrides detection)")
     p_gw.set_defaults(func=_cmd_gateway)
+
+    p_relay = sub.add_parser(
+        "relay", help="run a standalone circuit relay on a public machine")
+    p_relay.add_argument("--host", default="0.0.0.0")
+    p_relay.add_argument("--port", type=int, default=9200)
+    p_relay.add_argument("--public-url", default="",
+                         help="externally reachable base URL (defaults to host:port)")
+    p_relay.add_argument("--max-origins", type=int, default=256,
+                         help="max NAT'd origins tunneled at once")
+    p_relay.set_defaults(func=_cmd_relay)
 
     p_keys = sub.add_parser("keys", help="gateway API keys (billing wallets)")
     p_keys.add_argument("action", choices=["create", "me"])

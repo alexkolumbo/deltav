@@ -172,6 +172,25 @@ class RelayServer:
                             headers=headers)
 
 
+def build_relay_app(public_url: str, *, max_origins: int = 256) -> FastAPI:
+    """A standalone relay-only app (`deltav relay`): just the circuit relay
+    plus hardening — no chain, no compute. Run it on any public machine to
+    help NAT'd nodes and gateways become reachable."""
+    from .security import install_guards
+
+    app = FastAPI(title="Delta V relay", version="0.1.0")
+    install_guards(app)
+    server = RelayServer(public_url, max_origins=max_origins)
+    server.mount(app)
+
+    @app.get("/health")
+    async def health() -> dict:
+        return {"relay": True, "public_url": server.public_url,
+                "origins": server.origin_count, "capacity": server.max_origins}
+
+    return app
+
+
 async def discover_relay(client: httpx.AsyncClient, seeds) -> str:
     """Find a usable relay: check each seed's own /relay/info, and any
     relay-capable endpoints its /chain/nodes advertises. Returns the relay's

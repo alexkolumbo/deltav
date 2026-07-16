@@ -239,6 +239,61 @@ async def test_auto_connect_falls_back_to_relay_behind_nat():
         await relay.client.aclose()
 
 
+async def test_probe_public_ip_ignores_loopback():
+    """A same-host seed sees us as 127.0.0.1 — never a valid cross-host
+    endpoint, so probe must skip it (else connect=auto false-positives)."""
+    transport = MultiTransport()
+    client = httpx.AsyncClient(transport=transport)
+
+    loop_app = FastAPI()
+
+    @loop_app.get("/whoami")
+    async def whoami_loop() -> dict:
+        return {"ip": "127.0.0.1"}
+
+    transport.add("http://local-seed", loop_app)
+    assert await probe_public_ip(client, ["http://local-seed"]) == ""
+
+    real_app = FastAPI()
+
+    @real_app.get("/whoami")
+    async def whoami_real() -> dict:
+        return {"ip": "203.0.113.7"}
+
+    transport.add("http://real-seed", real_app)
+    assert await probe_public_ip(
+        client, ["http://local-seed", "http://real-seed"]) == "203.0.113.7"
+    await client.aclose()
+
+
+async def test_standalone_relay_app():
+    """`deltav relay` app: health + full tunnel, no chain required."""
+    from deltav.net.relay import build_relay_app
+
+    transport = MultiTransport()
+    transport.add("http://relay", build_relay_app("http://relay"))
+    client = httpx.AsyncClient(transport=transport)
+
+    info = (await client.get("http://relay/health")).json()
+    assert info["relay"] is True and info["origins"] == 0
+
+    origin = FastAPI()
+
+    @origin.get("/ping")
+    async def ping() -> dict:
+        return {"pong": True}
+
+    kp = KeyPair.from_seed_hex("dd" * 32)
+    rc = RelayClient(kp, origin, "http://relay",
+                     httpx.AsyncClient(transport=transport), concurrency=1)
+    via = await rc.start()
+    await asyncio.sleep(0.1)
+    got = await client.get(f"{via}/ping")
+    assert got.status_code == 200 and got.json() == {"pong": True}
+    await rc.stop()
+    await client.aclose()
+
+
 # ------------------------------------------------------------------- hardening
 async def test_verify_peer_rejects_wrong_chain():
     transport = MultiTransport()
