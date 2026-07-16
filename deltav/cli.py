@@ -451,6 +451,16 @@ def _cmd_tgbot(args: argparse.Namespace) -> int:
     return tg_main()
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    from .client import load_profile
+    from .proxy import run_proxy
+
+    profile = load_profile()
+    urls = [u.strip() for u in args.gateway.split(",") if u.strip()] or profile.base_urls
+    run_proxy(urls, api_key=args.key or profile.api_key, host=args.host, port=args.port)
+    return 0
+
+
 def _cmd_connect(args: argparse.Namespace) -> int:
     from .client import DeltaVClient, Profile, load_profile, save_profile
 
@@ -797,6 +807,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_tg.add_argument("--gateway", default="http://127.0.0.1:9000")
     p_tg.add_argument("--allow", default="", help="comma-separated Telegram user ids")
     p_tg.set_defaults(func=_cmd_tgbot)
+
+    p_serve = sub.add_parser(
+        "serve", help="zero-config local proxy: any tool -> localhost, no key/config")
+    p_serve.add_argument("--gateway", default="", help="gateway URL(s), comma-separated")
+    p_serve.add_argument("--key", default="", help="API key to attach (default: saved profile)")
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=11434, help="Ollama-compatible port")
+    p_serve.set_defaults(func=_cmd_serve)
 
     p_conn = sub.add_parser("connect", help="save how to reach the network (base URL + key)")
     p_conn.add_argument("--url", default="", help="gateway base URL(s), comma-separated for failover")

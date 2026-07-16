@@ -5,6 +5,36 @@ API *shape* is a translation layer, independent of the model being
 served. Any tool with an **OpenAI**, **Ollama**, or **Anthropic** setting
 works with the network directly.
 
+## Zero-config: `deltav serve`
+
+The simplest integration — a local proxy that holds your gateway URL and
+key, so tools point at `localhost` with **no key and no config**:
+
+```bash
+deltav connect --url http://<gw>:9000 --key dvk_…   # once
+deltav serve                                          # local proxy on :11434
+```
+
+Then any tool just works, credential-free:
+
+| Tool expects | Point it at |
+|---|---|
+| Ollama | `http://localhost:11434` (its default — often auto-detected) |
+| OpenAI | `http://localhost:11434/v1` |
+| Anthropic | `http://localhost:11434` |
+
+The proxy attaches your key and fails over across gateways. It's a
+transparent catch-all, so every surface (chat, embeddings, images,
+companion, swarm) works through it.
+
+## Web app (installable PWA)
+
+Open **`http://<gw>:9000/chat`** in any browser — a mobile-first client
+with streaming chat, agent / swarm / companion modes, image upload for
+vision, a model picker, and a settings panel (gateway + key, importable
+via `#key=…`). On iOS/Android "Add to Home Screen" installs it as an app;
+behind HTTPS it's a full PWA.
+
 Common settings:
 
 | Setting | Value |

@@ -297,8 +297,23 @@ class GatewayDaemon:
 
         @app.get("/chat", response_class=HTMLResponse)
         async def chat_ui() -> str:
-            """Mobile-first chat frontend served straight off the gateway."""
+            """Mobile-first PWA chat frontend served straight off the gateway."""
             return (Path(__file__).parent / "chat.html").read_text(encoding="utf-8")
+
+        @app.get("/manifest.webmanifest")
+        async def manifest() -> dict:
+            """PWA manifest so the chat is installable on phone/desktop."""
+            icon = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+                    "viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' "
+                    "fill='%230b0d10'/%3E%3Ctext x='50' y='68' font-size='60' "
+                    "text-anchor='middle' fill='%23ff7a1a' font-family='sans-serif'"
+                    "%3E%CE%94V%3C/text%3E%3C/svg%3E")
+            return {
+                "name": "Delta V Chat", "short_name": "ΔV",
+                "start_url": "/chat", "display": "standalone",
+                "background_color": "#0b0d10", "theme_color": "#0b0d10",
+                "icons": [{"src": icon, "sizes": "any", "type": "image/svg+xml"}],
+            }
 
         @app.get("/network")
         async def network() -> dict:
@@ -327,7 +342,7 @@ class GatewayDaemon:
                     "owned_by": "deltav",
                     "deltav": {
                         "family": spec.family, "params_b": spec.params_b, "quant": spec.quant,
-                        "kind": spec.kind,
+                        "kind": spec.kind, "vision": spec.vision,
                         "vram_needed_mb": estimate_vram_mb(spec), "quality": spec.quality,
                         "served_by": servers,
                     },
