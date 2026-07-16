@@ -170,14 +170,15 @@ class SmartRouter:
 
     def _infer_body(self, node: NodeView, spec: ModelSpec, prompt: str,
                     max_tokens: int, temperature: float, seed: int,
-                    requester: KeyPair | None = None) -> dict[str, Any]:
+                    requester: KeyPair | None = None,
+                    images: list | None = None) -> dict[str, Any]:
         payer = requester or self.requester
         req_hash = request_hash_for(prompt, spec.ref, max_tokens, seed)
         price_limit = self.estimate_price_limit(prompt, max_tokens)
         auth_sig = payer.sign(
             receipt_auth_bytes(req_hash, node.address, spec.ref, price_limit)
         )
-        return {
+        body = {
             "prompt": prompt,
             "model": spec.ref,
             "max_tokens": max_tokens,
@@ -188,6 +189,9 @@ class SmartRouter:
             "requester_sig": auth_sig,
             "price_limit": price_limit,
         }
+        if images:
+            body["images"] = images
+        return body
 
     async def route(
         self,
@@ -197,6 +201,7 @@ class SmartRouter:
         temperature: float = 0.0,
         seed: int = 0,
         requester: KeyPair | None = None,
+        images: list | None = None,
     ) -> RouteResult:
         spec = self.resolve_model(model)
         candidates = self.rank_nodes(spec)
@@ -206,7 +211,7 @@ class SmartRouter:
         errors: list[str] = []
         for attempt, node in enumerate(candidates, start=1):
             body = self._infer_body(node, spec, prompt, max_tokens, temperature, seed,
-                                    requester)
+                                    requester, images)
             try:
                 resp = await self.client.post(f"{node.endpoint}/infer", json=body, timeout=300.0)
                 resp.raise_for_status()

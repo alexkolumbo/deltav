@@ -367,8 +367,9 @@ class NodeDaemon:
         request_hash = sha256_hex(canonical_json(
             {"prompt": prompt, "model": model_ref, "max_tokens": max_tokens, "seed": seed}
         ))
-        request = InferRequest(prompt=prompt, model_ref=model_ref,
-                               max_tokens=max_tokens, temperature=temperature, seed=seed)
+        images = list(body.get("images", []))
+        request = InferRequest(prompt=prompt, model_ref=model_ref, max_tokens=max_tokens,
+                               temperature=temperature, seed=seed, images=images)
         self.active_jobs += 1
         try:
             async with self._job_sem:

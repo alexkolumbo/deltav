@@ -48,6 +48,27 @@ from ..router import Catalog, RouteError, SmartRouter
 from ..router.catalog import estimate_vram_mb
 
 
+def extract_images(messages: list[dict]) -> list[str]:
+    """Pull image URLs out of OpenAI vision content blocks, flattening each
+    message's content to text in place so the prompt renderer still works."""
+    images: list[str] = []
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, list):
+            continue
+        texts = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                texts.append(block.get("text", ""))
+            elif block.get("type") == "image_url":
+                url = block.get("image_url", {})
+                images.append(url.get("url", "") if isinstance(url, dict) else str(url))
+        m["content"] = " ".join(t for t in texts if t)
+    return [i for i in images if i]
+
+
 def render_prompt(messages: list[dict], tools: list[dict] | None = None) -> str:
     if tools:
         system = {"role": "system", "content": build_tool_system_prompt(tools)}
@@ -791,13 +812,14 @@ class GatewayDaemon:
             if not messages:
                 raise HTTPException(400, "messages required")
             tools = body.get("tools") or None
+            images = extract_images(messages)
             prompt = render_prompt(messages, tools)
             await self.router.refresh(self.node_urls)
             await self._precheck_funds(
                 record, prompt,
                 int(body.get("max_tokens") or body.get("max_completion_tokens") or 256))
 
-            if body.get("stream") and not tools:
+            if body.get("stream") and not tools and not images:
                 # True end-to-end streaming: tokens flow node -> gateway ->
                 # client as they are generated. (With tools we must see the
                 # full text to parse <tool_call>, so that path buffers.)
@@ -828,6 +850,7 @@ class GatewayDaemon:
                     temperature=float(body.get("temperature") or 0.0),
                     seed=int(body.get("seed") or 0),
                     requester=payer,
+                    images=images,
                 )
             except RouteError as exc:
                 raise HTTPException(503, str(exc))

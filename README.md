@@ -116,9 +116,15 @@ deltav registry list --vram 8176     # ranked models that fit your VRAM
 GET http://<gw>:9000/v1/registry?vram_mb=8176   # the unified DB over HTTP
 ```
 
-Reasoning models (DeepSeek-R1, Qwythos…) that split thinking into
-`reasoning_content` are handled — the backend returns the answer, or the
-reasoning when the answer didn't converge in the token budget.
+**Reasoning models** (DeepSeek-R1, Qwythos…) think before answering. On
+weak GPUs that burns the token budget, so the backend disables thinking by
+default (direct answers via `enable_thinking:false`); set `DELTAV_THINK=1`
+to keep the chain of thought.
+
+**Vision (multimodal)** works end to end: start the model's llama-server
+with `--mmproj <projector.gguf>`, and OpenAI vision messages (content
+blocks with `image_url`) flow gateway → node → model. Example: Qwythos-9B
+on an RX 6600M correctly answered the colour of an image in ~2 s.
 
 On 8 GB (RX 6600M): Qwen2.5-7B fits its native 32k context; Llama-3.2-3B
 reaches its full 128k (quantized KV). The catalog ships curated chat

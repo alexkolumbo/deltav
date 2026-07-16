@@ -33,9 +33,14 @@ class LlamaServerBackend(ComputeBackend):
     deterministic = False
     dynamic_models = False  # the server pre-loads ONE model at startup
 
-    def __init__(self, base_url: str | None = None, client: httpx.Client | None = None):
+    def __init__(self, base_url: str | None = None, client: httpx.Client | None = None,
+                 think: bool | None = None):
         self.base_url = (base_url or os.environ.get("LLAMA_SERVER_URL") or DEFAULT_URL).rstrip("/")
         self.client = client or httpx.Client(timeout=600.0)
+        # Reasoning models (Qwen3/DeepSeek-R1/Qwythos) think before answering.
+        # On weak GPUs that burns the token budget before the answer, so we
+        # DISABLE thinking by default (direct answers). DELTAV_THINK=1 opts in.
+        self.think = (os.environ.get("DELTAV_THINK", "") == "1") if think is None else think
 
     @classmethod
     def is_available(cls) -> bool:
@@ -65,13 +70,22 @@ class LlamaServerBackend(ComputeBackend):
         chat template from GGUF metadata (Qwen needs ChatML or it drifts
         into Chinese; Llama needs its header tokens; the server knows —
         we don't have to). STOP stays as a role-play safety net."""
+        content = request.prompt
+        if request.images:
+            # OpenAI vision content: text + image blocks (needs a --mmproj server)
+            content = [{"type": "text", "text": request.prompt}]
+            for img in request.images:
+                content.append({"type": "image_url", "image_url": {"url": img}})
         return {
             "model": "default",
-            "messages": [{"role": "user", "content": request.prompt}],
+            "messages": [{"role": "user", "content": content}],
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "seed": request.seed,
             "stop": self.STOP,
+            # Ask reasoning models to answer directly; ignored by models
+            # whose chat template doesn't define it.
+            "chat_template_kwargs": {"enable_thinking": self.think},
         }
 
     def infer(self, request: InferRequest) -> InferResult:

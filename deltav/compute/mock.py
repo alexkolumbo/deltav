@@ -51,6 +51,7 @@ class MockBackend(ComputeBackend):
 
     def infer(self, request: InferRequest) -> InferResult:
         self.load(request.model_ref)
+        vision_tag = f"[saw {len(request.images)} image(s)] " if request.images else ""
         scripted = _REPLY_RE.findall(request.prompt)
         if scripted:
             # the N-th model call in a growing agent prompt uses the N-th script
@@ -76,7 +77,7 @@ class MockBackend(ComputeBackend):
                     break
             stream = hashlib.sha256(stream).digest()
         return InferResult(
-            text="[" + request.model_ref + "] " + " ".join(words),
+            text=vision_tag + "[" + request.model_ref + "] " + " ".join(words),
             tokens_in=max(1, len(request.prompt.split())),
             tokens_out=n_out,
             seed=request.seed,
