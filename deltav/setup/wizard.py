@@ -154,21 +154,36 @@ class SetupWizard:
         # Rank from the unified registry (curated catalog + HF-discovered DB).
         from ..registry import ModelRegistry
         reg = ModelRegistry(catalog=catalog)
-        ranked = reg.rank(self.device.vram_mb, kind="chat", top=12)
+        ranked = reg.rank(self.device.vram_mb, kind="chat", top=12,
+                          served=self._served_models())
         if not ranked:
             self.spec = catalog.specs[0]
             self.warn(self.t("light_model"))
         else:
             self.spec = catalog.by_ref(ranked[0]["ref"]) or reg.discovered[ranked[0]["ref"]].to_spec()
             self._present_ranked(ranked[0])
-            if self.ask_yes("show_others", default=False):
-                self._choose_from_registry(ranked, catalog, reg)
+            # Always offer the alternatives — one take-it-or-leave-it model
+            # is not a choice. #1 stays the default, so Enter keeps it.
+            self._choose_from_registry(ranked, catalog, reg)
         self.state["model"] = self.spec.ref
         # The context this hardware can actually hold — the launcher must not
         # ask llama-server for more, or the engine fails to start on tight fits.
         from ..router.planner import max_context_for
         self.state["ctx"] = max_context_for(self.spec, self.device.vram_mb)
         self.state["vision"] = bool(getattr(self.spec, "vision", False))
+
+    def _served_models(self) -> set[str]:
+        """Model refs live nodes already serve (🔥 in the list) — serving a
+        warm model means immediate routing demand for a new node."""
+        if not self.seed:
+            return set()
+        try:
+            resp = self.client.get(f"{self.seed.rstrip('/')}/chain/nodes", timeout=8.0)
+            resp.raise_for_status()
+            return {m for n in resp.json().get("nodes", [])
+                    if n.get("active") for m in n.get("models", [])}
+        except (httpx.HTTPError, ValueError):
+            return set()
 
     def _present_ranked(self, best: dict) -> None:
         self.ok(self.t("recommend", name=best["ref"].split("/")[-1].split("::")[0]))
@@ -178,9 +193,12 @@ class SetupWizard:
     def _choose_from_registry(self, ranked: list, catalog, reg) -> None:
         for i, r in enumerate(ranked[:12], 1):
             tag = self.t("recommended_tag") if i == 1 else ""
-            src = "🔥" if r["served"] else ("👁" if r["vision"] else "")
-            say(f"    {i}. {r['ref'].split('/')[-1].split('::')[0]} "
-                f"· {r['params_b']}B · ctx {r['max_context']:,} {src}{tag}")
+            icons = ("👁" if r["vision"] else "") + ("🔥" if r["served"] else "")
+            name = r["ref"].split("/")[-1].split("::")[0]
+            say(f"    {i:2d}. {name:<42.42s} {r['params_b']:>5}B"
+                f" · ctx {r['max_context']:>7,} · {r['quant'] or '?':<7}"
+                f" · {human_mb(r['file_mb'])} {icons}{tag}")
+        self.note(self.t("model_legend"))
         choice = self.ask(self.t("pick_number"), "1").lower()
         if choice == "c":
             self._custom_model()

@@ -8,6 +8,7 @@ size-based KV heuristic applies, like any custom model).
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from dataclasses import asdict, dataclass, field
@@ -190,9 +191,43 @@ class ModelRegistry:
                 specs[m.ref] = m.to_spec()
         return list(specs.values())
 
+    @staticmethod
+    def _quant_bonus(quant: str) -> float:
+        """Higher-bit quants keep more of the model's quality — prefer them
+        among candidates that all fit (fit is already filtered by VRAM)."""
+        q = (quant or "").lower()
+        for prefix, bonus in (("f16", 0.04), ("bf16", 0.04), ("q8", 0.04),
+                              ("q6", 0.03), ("q5", 0.02), ("q4_k", 0.01),
+                              ("iq4", 0.0), ("q4", 0.0),
+                              ("q3", -0.03), ("iq3", -0.03),
+                              ("q2", -0.06), ("iq2", -0.06)):
+            if q.startswith(prefix):
+                return bonus
+        return 0.0
+
+    @staticmethod
+    def score(row: dict) -> float:
+        """Composite ranking score, in quality units (~0..1):
+
+        capability (params/family quality) + usable context (log-scaled — a
+        32k model beats an equal one stuck at 3k) + modality (vision serves
+        more request types) + quant fidelity + already-served-on-network
+        (warm model, immediate demand) + a small popularity nudge.
+        """
+        ctx_term = 0.03 * math.log2(max(1024, row["max_context"]) / 4096.0)
+        ctx_term = max(-0.06, min(0.12, ctx_term))
+        dl_term = min(0.03, 0.01 * math.log10(1 + row.get("downloads", 0)))
+        return (row["quality"]
+                + ctx_term
+                + (0.05 if row.get("vision") else 0.0)
+                + ModelRegistry._quant_bonus(row.get("quant", ""))
+                + (0.15 if row.get("served") else 0.0)
+                + dl_term)
+
     def rank(self, vram_mb: int, kind: str = "chat", top: int = 20,
              served: set[str] | None = None) -> list[dict]:
-        """Rank models that fit `vram_mb`: quality first, served ones boosted."""
+        """Rank models that fit `vram_mb` by the composite score (context,
+        modality, params, quant, served, popularity — see `score`)."""
         served = served or set()
         rows = []
         for spec in self.all_specs(kind):
@@ -201,16 +236,17 @@ class ModelRegistry:
                 continue  # doesn't fit at all
             is_served = spec.ref in served or spec.repo_id in served
             disc = self.discovered.get(spec.ref)
-            rows.append({
+            row = {
                 "ref": spec.ref, "repo": spec.repo_id, "family": spec.family,
                 "params_b": spec.params_b, "quant": spec.quant, "vision": spec.vision,
                 "quality": spec.quality, "file_mb": spec.file_mb, "max_context": ctx,
                 "served": is_served,
                 "downloads": disc.downloads if disc else 0,
                 "source": "hub" if disc else "catalog",
-            })
-        rows.sort(key=lambda r: (r["served"], round(r["quality"], 2), r["max_context"]),
-                  reverse=True)
+            }
+            row["score"] = round(self.score(row), 4)
+            rows.append(row)
+        rows.sort(key=lambda r: r["score"], reverse=True)
         # The catalog and the HF-discovered DB often hold the same model from
         # different uploaders (Qwen/… vs bartowski/…) — showing both as #7 and
         # #8 only confuses the wizard user. Keep the best-ranked copy.

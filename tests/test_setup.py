@@ -179,6 +179,37 @@ def test_launcher_ctx_capped_and_defaulted(tmp_path):
     assert "-c 4096" in body and "--mmproj" not in body
 
 
+def test_rank_score_weighs_context_modality_quant_and_served():
+    """The wizard's ordering follows the composite score: usable context,
+    vision, quant fidelity and being already-served all matter — not just
+    parameter count."""
+    from deltav.registry import ModelRegistry
+
+    base = {"quality": 0.75, "max_context": 4096, "vision": False,
+            "quant": "Q4_K_M", "served": False, "downloads": 0}
+    s = ModelRegistry.score
+    # More usable context wins between equal-quality models.
+    assert s(dict(base, max_context=32768)) > s(dict(base, max_context=3072))
+    # A 32k 7B outranks a slightly "better" model stuck at 3k context.
+    assert s(dict(base, max_context=32768)) > s(dict(base, quality=0.76, max_context=3072))
+    # Vision is a capability bonus.
+    assert s(dict(base, vision=True)) > s(base)
+    # Higher-bit quants rank above lower-bit at equal quality.
+    assert s(dict(base, quant="Q6_K")) > s(dict(base, quant="Q4_K_M")) > s(dict(base, quant="Q2_K"))
+    # Already-served models get a strong practical boost.
+    assert s(dict(base, served=True)) > s(dict(base, quality=0.85))
+
+
+def test_rank_returns_a_dozen_with_scores():
+    from deltav.registry import ModelRegistry
+    from deltav.router import Catalog
+
+    ranked = ModelRegistry(catalog=Catalog()).rank(24_000, kind="chat", top=12)
+    assert len(ranked) >= 10, "the wizard should offer a real choice, not one model"
+    assert all("score" in r for r in ranked)
+    assert ranked == sorted(ranked, key=lambda r: -r["score"])
+
+
 def test_rank_dedupes_same_model_from_different_uploaders():
     from deltav.registry import ModelRegistry
     from deltav.registry.registry import DiscoveredModel

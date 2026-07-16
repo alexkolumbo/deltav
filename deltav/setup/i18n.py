@@ -39,6 +39,8 @@ M: dict[str, dict[str, str]] = {
     "recommended_tag": {"en": " (recommended)", "ru": " (рекомендую)"},
     "pick_number":  {"en": "Model number (or 'c' to paste your own)",
                      "ru": "Номер модели (или 'c' — вставить свою)"},
+    "model_legend": {"en": "👁 = sees images · 🔥 = already served on this network",
+                     "ru": "👁 = видит картинки · 🔥 = уже раздаётся в этой сети"},
 
     "custom_prompt":{"en": "HuggingFace repo (e.g. org/repo or org/repo::file.gguf)",
                      "ru": "Репозиторий HuggingFace (напр. org/repo или org/repo::file.gguf)"},
