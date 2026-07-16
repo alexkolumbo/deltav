@@ -87,6 +87,10 @@ def _cmd_node(args: argparse.Namespace) -> int:
         data_dir=args.data_dir,
         max_parallel_jobs=args.parallel,
         price_per_token=args.price,
+        connect=args.connect,
+        relay=args.relay,
+        relay_public_url=args.relay_url,
+        relay_via=args.relay_via,
     )
     _run_node(keypair, genesis, cfg)
     return 0
@@ -136,6 +140,10 @@ def _cmd_join(args: argparse.Namespace) -> int:
         data_dir=data_dir,
         max_parallel_jobs=args.parallel,
         price_per_token=args.price,
+        connect=args.connect,
+        relay=args.relay,
+        relay_public_url=args.relay_url,
+        relay_via=args.relay_via,
     )
     _run_node(keypair, genesis, cfg)
     return 0
@@ -667,6 +675,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="concurrent inference jobs (keep 1 per GPU)")
     p_node.add_argument("--price", type=int, default=0,
                         help="asking price in udvt per token (0 = network default)")
+    p_node.add_argument("--connect", default="local",
+                        choices=["local", "auto", "direct", "relay"],
+                        help="external reachability: local (LAN), auto (direct or relay), "
+                             "direct (public IP), relay (tunnel through a public node)")
+    p_node.add_argument("--relay", action="store_true",
+                        help="also serve as a public relay for NAT'd nodes")
+    p_node.add_argument("--relay-url", default="",
+                        help="this relay's externally reachable base URL (with --relay)")
+    p_node.add_argument("--relay-via", default="",
+                        help="force tunneling through this specific relay")
     p_node.set_defaults(func=_cmd_node)
 
     p_join = sub.add_parser(
@@ -685,6 +703,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="concurrent inference jobs (keep 1 per GPU)")
     p_join.add_argument("--price", type=int, default=0,
                         help="asking price in udvt per token (0 = network default)")
+    p_join.add_argument("--connect", default="auto",
+                        choices=["local", "auto", "direct", "relay"],
+                        help="external reachability (default auto: direct if reachable, "
+                             "else relay through a public node — zero network config)")
+    p_join.add_argument("--relay", action="store_true",
+                        help="also serve as a public relay for NAT'd nodes")
+    p_join.add_argument("--relay-url", default="",
+                        help="this relay's externally reachable base URL (with --relay)")
+    p_join.add_argument("--relay-via", default="",
+                        help="force tunneling through this specific relay")
     p_join.set_defaults(func=_cmd_join)
 
     p_bal = sub.add_parser("balance", help="show an account")

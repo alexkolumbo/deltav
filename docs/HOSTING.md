@@ -79,24 +79,56 @@ deltav join --genesis genesis.json --wallet node.wallet.json --port 9100
 deltav gateway --genesis genesis.json --node http://127.0.0.1:9100 --port 9000
 ```
 
-## Make it reachable
+## Make it reachable (external access)
 
-Clients (and other nodes) reach you over the network, so open the ports:
+Other nodes reach you at a public address. `deltav join` works this out for
+you — **no port-forwarding, no manual IP, no TLS setup**:
 
-```powershell
-# Windows (PowerShell as admin) — node 9100, gateway 9000
-New-NetFirewallRule -DisplayName "DeltaV" -Direction Inbound `
-  -Protocol TCP -LocalPort 9000,9100 -Action Allow
-```
+- **`--connect auto`** (the default for `join`) — the node learns its public
+  address from a peer, self-tests whether it's directly reachable, and if so
+  announces it. Behind NAT/CGNAT it instead opens an *outbound* tunnel to a
+  public node that advertises as a relay and is handed a public URL
+  `https://<relay>/via/<node-id>` — reachable with **zero inbound ports**.
+- **`--connect direct`** — force the detected public address (you have a
+  public IP or a port-forward). Open the ports:
+
+  ```powershell
+  # Windows (PowerShell as admin) — node 9100, gateway 9000
+  New-NetFirewallRule -DisplayName "DeltaV" -Direction Inbound `
+    -Protocol TCP -LocalPort 9000,9100 -Action Allow
+  ```
+  ```bash
+  # Linux (ufw)
+  sudo ufw allow 9000,9100/tcp
+  ```
+
+- **`--connect relay`** / **`--relay-via <url>`** — always tunnel through a
+  relay (useful on CGNAT or a laptop that moves networks).
+- **`--connect local`** — LAN / dev only; announce `host:port` as-is.
+
+You can still set `--endpoint http://<addr>:9100` to name your address
+explicitly; it's always trusted as-is.
+
+### Run a relay (help NAT'd nodes join through you)
+
+Any node with a public address can volunteer as a relay so nodes behind NAT
+reach the network through it — this is what keeps external access
+**decentralized**, with no third-party tunnel service:
 
 ```bash
-# Linux (ufw)
-sudo ufw allow 9000,9100/tcp
+deltav node ... --relay --relay-url https://relay.example.com
 ```
 
-Your LAN address is what you put in `--endpoint` (e.g. `http://10.0.0.223:9100`).
-For access from outside your network, put a reverse proxy / tunnel
-(Cloudflare Tunnel, Caddy with TLS) in front of the gateway.
+A relay only forwards **signed** traffic; it cannot read or forge chain
+messages (every tx, block and receipt is signed), and it only tunnels for a
+node that cryptographically proves it owns its identity. Put TLS in front of
+a public relay (your existing Caddy / reverse proxy) so relayed nodes serve
+over `https://`.
+
+**Security, built in:** gossip is rate-limited per IP and request bodies are
+capped; a peer URL learned from gossip is trusted only after it proves it's
+on your chain; payment always needs the requester's signature over a price
+cap. Watch your node at **`http://<addr>:9100/explorer`**.
 
 ## Choosing a model
 

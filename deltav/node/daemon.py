@@ -35,6 +35,8 @@ from ..compute import (
 )
 from ..config import Genesis
 from ..crypto import KeyPair, canonical_json, sha256_hex
+from ..net import RelayClient, RelayServer, check_direct, mount_reach, probe_public_ip
+from ..net.security import install_guards, verify_peer
 from .verify import spot_check_verdict
 
 log = logging.getLogger("deltav.node")
@@ -62,6 +64,14 @@ class NodeConfig:
     # Asking price in udvt per token; 0 = network default. Announced
     # on-chain — receipts pay this price, the router prefers cheaper nodes.
     price_per_token: int = 0
+    # External connectivity. "local": announce host:port as-is (LAN/dev).
+    # "auto": learn our public address, self-test, use it if reachable else
+    # a relay. "direct": force the detected public address. "relay": always
+    # go through a relay (behind NAT/CGNAT).
+    connect: str = "local"
+    relay: bool = False            # also serve as a public relay for NAT'd peers
+    relay_public_url: str = ""     # this relay's externally reachable base URL
+    relay_via: str = ""            # force a specific relay to tunnel through
 
     def effective_price(self, default: int) -> int:
         return self.price_per_token or default
@@ -95,12 +105,20 @@ class NodeDaemon:
         self._head_seen_at = time.monotonic()
         self._tasks: list[asyncio.Task] = []
         self._running = False
+        # A public node can relay for NAT'd peers; a NAT'd node tunnels out.
+        self.relay_server = (
+            RelayServer(cfg.relay_public_url or cfg.public_url()) if cfg.relay else None)
+        self.relay_client: RelayClient | None = None
         self.app = self._build_app()
 
     # --------------------------------------------------------------- utils
     @property
     def address(self) -> str:
         return self.keypair.address
+
+    @property
+    def chain_id(self) -> str:
+        return self.chain.genesis.params.chain_id
 
     def _next_nonce(self) -> int:
         base = self.chain.state.account(self.address).nonce
@@ -129,6 +147,9 @@ class NodeDaemon:
         self._head_seen_at = time.monotonic()
 
     def _add_peers(self, urls) -> None:
+        """Add trusted peer URLs (from our own config or the on-chain node
+        registry) directly. For URLs learned from gossip, use the verified
+        path instead — see `_add_peer_verified`."""
         me = self.cfg.public_url()
         for url in urls:
             if isinstance(url, str) and url.startswith("http") and url != me:
@@ -136,12 +157,30 @@ class NodeDaemon:
                     break
                 self.peers.add(url.rstrip("/"))
 
+    async def _add_peer_verified(self, url: str) -> None:
+        """Add a gossip-learned peer only after it proves it's on our chain —
+        so a hostile or bogus URL can never poison the peer set."""
+        if not isinstance(url, str) or not url.startswith("http"):
+            return
+        url = url.rstrip("/")
+        if url == self.cfg.public_url() or url in self.peers or len(self.peers) >= MAX_PEERS:
+            return
+        if await verify_peer(self.client, url, self.chain_id) and len(self.peers) < MAX_PEERS:
+            self.peers.add(url)
+
     # ----------------------------------------------------------------- api
     def _build_app(self) -> FastAPI:
         app = FastAPI(title="Delta V node", version="0.1.0")
         # The explorer page polls other nodes' /health cross-origin.
         app.add_middleware(
             CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+        # Internet-facing hardening: cap body size, rate-limit gossip per IP.
+        install_guards(app)
+        # Reachability self-test surface (/whoami, /net/echo, /net/reachcheck).
+        mount_reach(app, self)
+        # If we volunteered as a relay, expose the tunnel endpoints.
+        if self.relay_server is not None:
+            self.relay_server.mount(app)
 
         @app.get("/health")
         async def health() -> dict:
@@ -180,7 +219,7 @@ class NodeDaemon:
                 return {"status": "seen"}
             self._seen_blocks.add(block.hash)
             if from_url:
-                self._add_peers([from_url])
+                asyncio.get_running_loop().create_task(self._add_peer_verified(from_url))
             try:
                 self.chain.add_block(block)
                 self._note_new_head()
@@ -593,6 +632,8 @@ class NodeDaemon:
     # --------------------------------------------------------------- loops
     async def start(self) -> None:
         self._running = True
+        # Decide our public endpoint before we announce ourselves on-chain.
+        self._tasks.append(asyncio.create_task(self._connectivity_bootstrap()))
         if self.cfg.auto_register:
             self._tasks.append(asyncio.create_task(self._register_loop()))
         self._tasks.append(asyncio.create_task(self._producer_loop()))
@@ -603,12 +644,88 @@ class NodeDaemon:
 
     async def stop(self) -> None:
         self._running = False
+        if self.relay_client is not None:
+            await self.relay_client.stop()
+            self.relay_client = None
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
         if self._owns_client:
             await self.client.aclose()
+
+    # -------------------------------------------------------- connectivity
+    async def _connectivity_bootstrap(self) -> None:
+        """Pick the address the whole network reaches us at.
+
+        A manually-set endpoint (or connect=local) is trusted as-is. Else
+        we learn our public IP from a peer, self-test direct reachability,
+        and — behind NAT — fall back to a relay. Setting cfg.endpoint here
+        makes the periodic _register_loop announce the right URL on-chain.
+        """
+        mode = self.cfg.connect
+        if mode == "local" or self.cfg.endpoint:
+            return
+        params = self.chain.genesis.params
+        # Let the HTTP server bind before we ask a peer to call us back.
+        await asyncio.sleep(params.block_time)
+        peers = list(self.peers) or list(self.cfg.peers)
+        if not peers:
+            log.warning("connect=%s but no peers to probe — staying on %s",
+                        mode, self.cfg.public_url())
+            return
+
+        if mode in ("auto", "direct"):
+            ip = await probe_public_ip(self.client, peers)
+            if ip:
+                candidate = f"http://{ip}:{self.cfg.port}"
+                reachable = mode == "direct" or await check_direct(
+                    self.client, peers, candidate, self.chain_id)
+                if reachable:
+                    self.cfg.endpoint = candidate
+                    log.info("direct connectivity — announcing %s", candidate)
+                    return
+            if mode == "direct":
+                log.error("connect=direct but reachability could not be confirmed")
+                return
+            log.info("not directly reachable (NAT) — falling back to a relay")
+
+        await self._connect_via_relay(peers)
+
+    async def _connect_via_relay(self, peers) -> None:
+        relay_url = self.cfg.relay_via or await self._discover_relay(peers)
+        if not relay_url:
+            log.error("no relay available — reachable only on the local network")
+            return
+        client = RelayClient(self.keypair, self.app, relay_url, self.client)
+        try:
+            via = await client.start()
+        except httpx.HTTPError as exc:
+            log.error("relay attach failed (%s) — staying local", exc)
+            return
+        self.relay_client = client
+        self.cfg.endpoint = via
+        log.info("relay connectivity via %s — announcing %s", relay_url, via)
+
+    async def _discover_relay(self, peers) -> str:
+        """Find a relay: prefer on-chain nodes advertising relay capability,
+        then fall back to probing our seed peers."""
+        candidates = [
+            n.endpoint for n in self.chain.state.nodes.values()
+            if n.active and n.address != self.address
+            and isinstance(n.hardware, dict) and n.hardware.get("relay")
+        ]
+        candidates += [p for p in peers if p not in candidates]
+        for url in candidates:
+            try:
+                resp = await self.client.get(f"{url.rstrip('/')}/relay/info", timeout=5.0)
+                resp.raise_for_status()
+                data = resp.json()
+            except httpx.HTTPError:
+                continue
+            if data.get("relay") and data.get("origins", 0) < data.get("capacity", 1):
+                return data.get("public_url") or url.rstrip("/")
+        return ""
 
     async def _register_loop(self) -> None:
         """Keep our on-chain registration true to reality.
@@ -627,6 +744,7 @@ class NodeDaemon:
             hardware = self.device.to_dict() | {
                 "backend": self.backend.name,
                 "dynamic_models": self.backend.dynamic_models,
+                "relay": self.cfg.relay,
             }
             registered = (
                 info is not None
@@ -761,7 +879,8 @@ class NodeDaemon:
                     resp.raise_for_status()
                 except httpx.HTTPError:
                     continue
-                self._add_peers(resp.json().get("peers", []))
+                await asyncio.gather(*(
+                    self._add_peer_verified(u) for u in resp.json().get("peers", [])))
 
     # --------------------------------------------------------- spot checks
     def _my_check_duty(self, receipt_hash: str) -> bool:

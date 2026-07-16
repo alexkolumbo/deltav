@@ -52,6 +52,12 @@ deltav setup --seed http://<any-live-node>:9100
 You can accept the recommended model or paste your own HuggingFace repo —
 **analyzed** for fit (verdict + max context) or **forced** as-is.
 
+**External access is automatic.** `deltav join` learns whether it's directly
+reachable and, behind NAT/CGNAT, opens an outbound tunnel through any public
+relay node — reachable network-wide with **no port-forwarding, no manual IP,
+no TLS setup**, and no third-party service (relays are just nodes). See
+[Hosting → Make it reachable](docs/HOSTING.md).
+
 ## Connect a client
 
 The gateway is a full **OpenAI-compatible** endpoint with streaming (SSE),
