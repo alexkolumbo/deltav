@@ -336,7 +336,10 @@ function agoTs(ts){ if(!ts)return '—'; const s=Math.max(0,Date.now()/1000-ts);
 function agoBlocks(n,bt){ return agoTs(Date.now()/1000-n*bt); }
 function hhmmss(sec){sec=Math.max(0,sec|0);const h=(sec/3600)|0,m=((sec%3600)/60)|0,s=sec%60;
   return (h?String(h).padStart(2,'0')+':':'')+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');}
-async function getJSON(p){try{const r=await fetch(p);if(!r.ok)throw 0;return await r.json();}catch(e){return null;}}
+/* When served through a relay the page lives under /via/<node-id>/ —
+   every absolute path must keep that prefix or it hits the relay root. */
+const BASE=(location.pathname.match(/^\/via\/[^\/]+/)||[''])[0];
+async function getJSON(p){try{const r=await fetch(BASE+p);if(!r.ok)throw 0;return await r.json();}catch(e){return null;}}
 let CFG={origin:location.origin,repo:'https://github.com/alexkolumbo/deltav'};
 let OV=null, SER=null, BT=2.0, nextEpochAt=0;
 
@@ -580,7 +583,7 @@ function tool(tl){
    anthropic:`# Anthropic SDK\nbase_url = ${o}\nmodel    = "auto"`,
    cli:`pip install "deltav-network @ git+https://github.com/alexkolumbo/deltav"\ndeltav connect --url ${o} --key dvk_…\ndeltav repl        # or: deltav serve  (zero-config localhost proxy)`};
   $('#toolbody').innerHTML = tl==='web'
-    ? `<div class="card" style="margin-top:12px"><p class="muted">${esc(o)}/chat</p><a class="btn" href="/chat">${t('open_chat')}</a></div>`
+    ? `<div class="card" style="margin-top:12px"><p class="muted">${esc(o)}/chat</p><a class="btn" href="${BASE}/chat">${t('open_chat')}</a></div>`
     : block(T[tl]);
 }
 $('#toolseg').addEventListener('click',e=>{if(!e.target.dataset.tool)return;
@@ -608,6 +611,9 @@ function startAuto(){stopAuto();timer=setInterval(async()=>{
 function stopAuto(){if(timer)clearInterval(timer);timer=null;}
 (async()=>{
   applyLang();
+  // Keep the /via/<id> prefix on same-gateway links when relayed.
+  if(BASE) $$('a[href^="/"]').forEach(a=>{const h=a.getAttribute('href');
+    if(!h.startsWith('//')) a.setAttribute('href',BASE+h);});
   const c=await getJSON('/portal/config'); if(c)CFG=c;
   renderOS('linux'); tool('web');
   await loadOverview();
