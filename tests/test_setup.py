@@ -175,6 +175,29 @@ def test_launcher_script_is_runnable(tmp_path):
         assert "engine.log" in body and "node.log" in body
 
 
+def test_launcher_never_emits_empty_node_args(tmp_path):
+    """Offline/partial setup (empty genesis/seed/model in state) must still
+    write a launcher with NO empty Start-Process -ArgumentList element — an
+    empty element aborts Start-Process ('argument is empty or NULL'). genesis
+    and wallet fall back to fixed local paths, seed to the public default, and
+    --model is dropped when unknown."""
+    import re
+    wiz = SetupWizard(home=tmp_path)
+    wiz.state = {"server": str(tmp_path / "llama-server"), "model": "",
+                 "model_path": str(tmp_path / "m.gguf"), "genesis": "",
+                 "wallet": "", "seed": "", "price": 9}
+    assert all(a != "" for a in wiz._node_args())          # the builder guards it
+    body = wiz.write_launcher().read_text(encoding="utf-8")
+    node_line = next(l for l in body.splitlines() if "deltav.cli" in l and "'node'" in l)
+    m = re.search(r"-ArgumentList (.+?) -RedirectStandardOutput", node_line)
+    assert m, "node launch line not found"
+    argline = m.group(1)
+    assert "''" not in argline                              # no empty element
+    assert "genesis.json" in argline and "node.wallet.json" in argline
+    assert "/via/dv1cfb" in argline                         # default public seed
+    assert "--model" not in argline                         # dropped when empty
+
+
 def test_launcher_ctx_capped_and_defaulted(tmp_path):
     wiz = SetupWizard(home=tmp_path)
     base = {

@@ -83,8 +83,25 @@ def _run_node(keypair, genesis: Genesis, cfg) -> None:
 def _cmd_node(args: argparse.Namespace) -> int:
     from .node import NodeConfig
 
+    from pathlib import Path
+
     keypair = load_or_create(args.wallet or wallet_path("node"))
-    genesis = Genesis.load(args.genesis)
+    # Resilience: if the genesis file isn't there (setup couldn't reach the
+    # network at install time, or a stale/empty path), fetch it from a peer and
+    # cache it — so the launcher works the moment the network is reachable
+    # instead of dying on a missing/empty genesis.
+    gpath = Path(args.genesis) if args.genesis else None
+    if (gpath is None or not gpath.exists()) and args.peer:
+        from .bootstrap import fetch_genesis
+        print(f"genesis missing locally — fetching from {args.peer[0]} ...")
+        genesis = asyncio.run(fetch_genesis(args.peer[0]))
+        if genesis is not None:
+            genesis.save(gpath or (Path(args.data_dir or ".") / "genesis.json"))
+    else:
+        genesis = Genesis.load(args.genesis)
+    if genesis is None:
+        raise SystemExit(f"could not load or fetch genesis (path={args.genesis!r}, "
+                         f"peers={args.peer})")
     cfg = NodeConfig(
         host=args.host,
         port=args.port,

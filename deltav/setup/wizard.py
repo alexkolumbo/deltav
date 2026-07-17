@@ -477,15 +477,27 @@ class SetupWizard:
         # A remote/NAT'd node MUST be told a relay, or it stays LAN-only (the
         # "no relay available — reachable only on the local network" trap).
         s = self.state
-        args = ["--genesis", s.get("genesis", ""), "--wallet", s.get("wallet", ""),
+        # Use FIXED local paths (never the possibly-empty state values): an
+        # empty element makes PowerShell Start-Process -ArgumentList abort
+        # ("argument is empty or NULL"). genesis.json may not exist yet if setup
+        # ran offline — the node fetches it from --peer on first launch.
+        genesis = s.get("genesis") or str(self.home / "genesis.json")
+        wallet = s.get("wallet") or str(self.home / "node.wallet.json")
+        model = s.get("model") or ""
+        seed = s.get("seed") or "http://5.78.65.237:9200/via/dv1cfb5013a0ff17f0977f01eb3630ce9beb25cf6f5"
+        args = ["--genesis", genesis, "--wallet", wallet,
                 "--host", "0.0.0.0", "--port", "9100",
-                "--backend", "llamaserver", "--model", s.get("model", ""),
+                "--backend", "llamaserver",
                 "--data-dir", str(self.home / "data"),
                 "--price", str(s.get("price", 0)),
-                "--peer", s.get("seed", ""), "--connect", "auto"]
+                "--peer", seed, "--connect", "auto"]
+        if model:                       # only announce a model if we have one
+            args += ["--model", model]
         relay = self._relay_base()
         if relay:
             args += ["--relay-via", relay]
+        # Belt-and-braces: an empty element aborts Start-Process -ArgumentList.
+        assert all(a != "" for a in args), f"empty node arg: {args}"
         return args
 
     @staticmethod
