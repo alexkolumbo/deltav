@@ -96,6 +96,7 @@ class GatewayDaemon:
         memory_path: str | None = None,
         keys_path: str | None = None,
         require_keys: bool = False,
+        free_mode: bool = False,
         connect: str = "local",
         relay_via: str = "",
         public_url: str = "",
@@ -130,6 +131,10 @@ class GatewayDaemon:
         # Billing: API keys are custodial on-chain wallets.
         self.keys = KeyStore(keys_path)
         self.require_keys = require_keys
+        # Alpha "free access": the gateway wallet pays for every request (keyed,
+        # session or anonymous) so users aren't blocked by an empty balance;
+        # usage is still attributed to the account/key for the cabinet stats.
+        self.free_mode = free_mode
         # User accounts (username/password personal cabinet) over the same
         # custodial wallets — accounts.json lives next to keys.json.
         from .accounts import AccountStore
@@ -194,15 +199,18 @@ class GatewayDaemon:
             record = self.keys.resolve(token)
             if record is None:
                 raise HTTPException(401, "unknown API key")
-            return self.keys.keypair(record), record
+            payer = self.keypair if self.free_mode else self.keys.keypair(record)
+            return payer, record
         # A logged-in web session pays from its account's custodial wallet —
-        # same wallet + usage as that account's dvk_ key.
+        # same wallet + usage as that account's dvk_ key (gateway pays in
+        # free_mode so a fresh 0-balance account can still use the service).
         if token.startswith("dvs_"):
             acct = self.accounts.resolve_session(token)
             record = self.accounts.record_of(acct) if acct else None
             if record is None:
                 raise HTTPException(401, "session expired — sign in again")
-            return self.keys.keypair(record), record
+            payer = self.keypair if self.free_mode else self.keys.keypair(record)
+            return payer, record
         if self.require_keys:
             raise HTTPException(401, "API key required: POST /v1/keys, then fund its address")
         return self.keypair, None
@@ -221,7 +229,9 @@ class GatewayDaemon:
                               prompt: str, max_tokens: int) -> None:
         """Fail with 402 BEFORE inference: an underfunded receipt would be
         rejected on-chain and the node would have worked for free."""
-        if record is None:
+        # Free access (alpha): the gateway wallet pays, so a user's own balance
+        # is irrelevant — never block them on it.
+        if record is None or self.free_mode:
             return
         needed = self.router.estimate_price_limit(prompt, max_tokens)
         balance = await self._onchain_balance(record.address)

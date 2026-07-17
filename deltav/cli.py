@@ -168,7 +168,7 @@ def _cmd_gateway(args: argparse.Namespace) -> int:
     daemon = GatewayDaemon(keypair, node_urls=args.node, params=params,
                            memory_path=args.memory_file or None,
                            keys_path=args.keys_file or None,
-                           require_keys=args.require_keys,
+                           require_keys=args.require_keys, free_mode=args.free,
                            connect=args.connect, relay_via=args.relay_via,
                            public_url=args.public_url, port=args.port)
     print(f"gateway {keypair.address} on http://{args.host}:{args.port} -> nodes {args.node}")
@@ -781,6 +781,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="persist agent session memory to this jsonl file")
     p_gw.add_argument("--keys-file", default="",
                       help="persist API keys (custodial billing wallets) here")
+    p_gw.add_argument("--free", action="store_true",
+                      help="alpha free access: the gateway wallet pays for every "
+                           "request; usage is still tracked per account/key")
     p_gw.add_argument("--require-keys", action="store_true",
                       help="reject requests without a funded dvk_ API key")
     p_gw.add_argument("--connect", default="local",
