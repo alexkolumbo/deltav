@@ -63,6 +63,20 @@
   .sheet button { flex:1; border-radius:8px; padding:10px; font-size:14px; border:1px solid var(--line);
                   background:var(--bg); color:var(--fg); }
   .sheet button.primary { background:var(--accent); color:#000; border:none; font-weight:600; }
+  .sheet.wide { max-width:480px; max-height:88vh; overflow-y:auto; }
+  .acc-sec { border-top:1px solid var(--line); padding-top:12px; margin-top:12px; }
+  .acc-sec:first-of-type { border-top:none; padding-top:0; margin-top:0; }
+  .copyrow { display:flex; gap:8px; align-items:center; margin-top:4px; }
+  .copyrow code { flex:1; min-width:0; background:var(--bg); border:1px solid var(--line);
+                  border-radius:8px; padding:8px 10px; font-size:12px; overflow-x:auto; white-space:nowrap; }
+  .copy { border:1px solid var(--line); background:var(--bg); color:var(--dim); border-radius:8px;
+          padding:8px 11px; font-size:12px; cursor:pointer; white-space:nowrap; flex:none; }
+  .copy.done { color:var(--ok); border-color:var(--ok); }
+  .dimnote { font-size:12px; color:var(--dim); margin-top:8px; line-height:1.5; }
+  .snippet { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px;
+             font-size:11px; overflow-x:auto; white-space:pre; margin-top:4px; color:var(--fg); }
+  .kv { display:flex; justify-content:space-between; gap:10px; font-size:13px; padding:4px 0; color:var(--dim); }
+  .kv b { color:var(--fg); font-weight:600; word-break:break-all; text-align:right; }
 </style>
 </head>
 <body>
@@ -70,6 +84,7 @@
   <span class="logo">&Delta;V</span>
   <span id="status" title="network"></span>
   <select id="model"><option value="auto">auto</option></select>
+  <button class="iconbtn" id="acct" title="подключение и кабинет">🔑</button>
   <button class="iconbtn" id="gear" title="настройки">⚙</button>
   <button class="iconbtn" id="reset" title="новый диалог">↺</button>
 </header>
@@ -90,6 +105,34 @@
   <input type="file" id="file" accept="image/*" hidden>
 </footer>
 
+<div class="modal" id="account">
+  <div class="sheet wide">
+    <h3>🔑 Подключение и кабинет</h3>
+    <div class="acc-sec">
+      <label>Base URL (OpenAI-совместимый)</label>
+      <div class="copyrow"><code id="a-base"></code><button class="copy" data-copy="a-base">Копировать</button></div>
+      <label>ID модели</label>
+      <div class="copyrow"><code id="a-model"></code><button class="copy" data-copy="a-model">Копировать</button></div>
+    </div>
+    <div class="acc-sec">
+      <label>API-ключ</label>
+      <div class="copyrow"><code id="a-key">—</code><button class="copy" data-copy="a-key">Копировать</button></div>
+      <button id="a-newkey" style="width:100%;margin-top:10px">Создать новый API-ключ</button>
+      <div id="a-keynote" class="dimnote"></div>
+    </div>
+    <div class="acc-sec">
+      <label>Личный кабинет</label>
+      <div id="a-account" class="dimnote">Создайте или вставьте dvk_-ключ, чтобы увидеть баланс и расход.</div>
+    </div>
+    <div class="acc-sec">
+      <label>Пример запроса</label>
+      <pre id="a-curl" class="snippet"></pre>
+      <button class="copy" data-copy="a-curl" style="width:100%;margin-top:8px">Копировать curl</button>
+    </div>
+    <div class="actions"><button class="primary" id="a-close">Готово</button></div>
+  </div>
+</div>
+
 <div class="modal" id="settings">
   <div class="sheet">
     <h3>Подключение к сети</h3>
@@ -108,8 +151,13 @@
 const $ = id => document.getElementById(id);
 const log = $("log"), input = $("input"), sendBtn = $("send");
 let messages = [], busy = false, mode = "chat", pendingImage = null;
+// API base = where THIS page is mounted, minus the trailing /chat. Served at
+// http://host:9000/chat  -> base http://host:9000. Served through the relay at
+// http://relay:9200/via/<gw>/chat -> base http://relay:9200/via/<gw> (NOT
+// location.origin, which drops the /via/<gw> prefix and hits the relay root=404).
+const apiBase = () => (location.origin + location.pathname).replace(/\/chat\/?$/, "");
 const CFG = {
-  base: localStorage.dvBase || location.origin,
+  base: localStorage.dvBase || apiBase(),
   key: localStorage.dvKey || "deltav",
   session: localStorage.dvSession || (localStorage.dvSession = "web-" + Math.random().toString(36).slice(2, 10)),
 };
@@ -198,8 +246,68 @@ document.querySelectorAll(".mode").forEach(m => m.onclick = () => {
 // settings
 $("gear").onclick = () => { $("s-url").value = CFG.base; $("s-key").value = CFG.key; $("settings").classList.add("on"); };
 $("s-cancel").onclick = () => $("settings").classList.remove("on");
-$("s-save").onclick = () => { CFG.base = localStorage.dvBase = $("s-url").value.trim() || location.origin;
+$("s-save").onclick = () => { CFG.base = localStorage.dvBase = $("s-url").value.trim() || apiBase();
   CFG.key = localStorage.dvKey = $("s-key").value.trim() || "deltav"; $("settings").classList.remove("on"); loadModels(); };
+
+// ---- Connect & personal cabinet ----
+document.addEventListener("click", e => {
+  const b = e.target.closest(".copy"); if (!b) return;
+  const txt = $(b.dataset.copy).textContent; if (!txt || txt === "—") return;
+  navigator.clipboard.writeText(txt).then(() => {
+    const old = b.textContent; b.classList.add("done"); b.textContent = "✓ Скопировано";
+    setTimeout(() => { b.classList.remove("done"); b.textContent = old; }, 1200);
+  });
+});
+function openAccount() {
+  const model = $("model").value || "auto";
+  $("a-base").textContent = CFG.base;
+  $("a-model").textContent = model;
+  $("a-key").textContent = (CFG.key && CFG.key.startsWith("dvk_")) ? CFG.key : "—";
+  $("a-curl").textContent =
+    'curl ' + CFG.base + '/v1/chat/completions \\\n' +
+    '  -H "Authorization: Bearer ' + (CFG.key && CFG.key.startsWith("dvk_") ? CFG.key : "dvk_ВАШ_КЛЮЧ") + '" \\\n' +
+    '  -H "Content-Type: application/json" \\\n' +
+    "  -d '{\"model\":\"" + model + "\",\"messages\":[{\"role\":\"user\",\"content\":\"привет\"}]}'";
+  $("a-keynote").textContent = "";
+  $("account").classList.add("on");
+  loadCabinet();
+}
+async function loadCabinet() {
+  const box = $("a-account");
+  if (!CFG.key || !CFG.key.startsWith("dvk_")) {
+    box.textContent = "Создайте или вставьте dvk_-ключ, чтобы увидеть баланс и расход."; return;
+  }
+  box.textContent = "Загрузка…";
+  try {
+    const me = await (await fetch(CFG.base + "/v1/keys/me", { headers: H() })).json();
+    if (!me.address) { box.textContent = me.detail || "Ключ не распознан."; return; }
+    const dvt = x => ((x || 0) / 1e6).toFixed(4) + " DVT";
+    box.innerHTML =
+      '<div class="kv"><span>Адрес</span><b style="font-size:11px">' + me.address + '</b></div>' +
+      '<div class="kv"><span>Баланс</span><b>' + dvt(me.balance_udvt) + '</b></div>' +
+      '<div class="kv"><span>Запросов</span><b>' + (me.requests || 0) + '</b></div>' +
+      '<div class="kv"><span>Токенов</span><b>' + (me.tokens || 0) + '</b></div>' +
+      '<div class="kv"><span>Потрачено (оц.)</span><b>' + dvt(me.spent_udvt_estimate) + '</b></div>' +
+      '<div class="dimnote">Пополнить: <code>deltav send --to ' + me.address + ' --amount &lt;DVT&gt;</code></div>';
+  } catch (e) { box.textContent = "Не удалось загрузить кабинет (проверьте Base URL и ключ)."; }
+}
+$("a-newkey").onclick = async () => {
+  $("a-keynote").textContent = "Создаю ключ…";
+  try {
+    const r = await (await fetch(CFG.base + "/v1/keys", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: "web" }) })).json();
+    if (r.api_key) {
+      CFG.key = localStorage.dvKey = r.api_key;
+      $("a-key").textContent = r.api_key;
+      $("a-keynote").innerHTML = "✓ Ключ создан и сохранён в этом браузере. Пополните адрес <b style='font-size:11px'>" +
+        r.address + "</b> — запросы оплачиваются с него on-chain.";
+      openAccount.lastModel = null; loadCabinet();
+    } else $("a-keynote").textContent = r.detail || "Не удалось создать ключ.";
+  } catch (e) { $("a-keynote").textContent = "Ошибка создания ключа."; }
+};
+$("a-close").onclick = () => $("account").classList.remove("on");
+$("acct").onclick = openAccount;
 
 sendBtn.onclick = onSend;
 input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); } });
