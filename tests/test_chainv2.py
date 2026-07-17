@@ -264,3 +264,21 @@ def test_state_root_backward_compat_omits_default_v2_fields():
     rd = st.to_dict()["receipts"]["h"]
     assert not ({"settle_key", "emission", "ok_checks", "fail_checks", "checked_by",
                  "disputed", "dispute_deadline", "settled"} & set(rd))
+
+
+def test_account_ro_read_does_not_pollute_state_root():
+    """A read of a not-yet-funded account (a status endpoint, the node's own
+    nonce during registration, mempool pruning) must NOT insert it. account()
+    auto-creates; on a node whose address isn't in genesis that adds a phantom
+    empty account to the LIVE chain state mid-sync, so validate_block sees an
+    extra account and every block fails 'state_root mismatch' — the node can
+    never sync. account_ro() is the read-only path that avoids it."""
+    st = State(_params(version=1))
+    root0 = st.state_root()
+    ghost = "dv1" + "e" * 40
+    acc = st.account_ro(ghost)
+    assert acc.balance == 0 and acc.nonce == 0
+    assert ghost not in st.accounts and st.state_root() == root0   # untouched
+    # the mutating accessor (only for apply_tx) DOES insert and shifts the root
+    st.account(ghost)
+    assert ghost in st.accounts and st.state_root() != root0

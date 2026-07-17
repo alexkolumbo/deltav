@@ -141,7 +141,7 @@ class NodeDaemon:
         return self.chain.genesis.params.chain_id
 
     def _next_nonce(self) -> int:
-        base = self.chain.state.account(self.address).nonce
+        base = self.chain.state.account_ro(self.address).nonce
         pending = [tx.nonce for tx in self.mempool.txs.values() if tx.sender == self.address]
         return max([base] + [n + 1 for n in pending])
 
@@ -359,7 +359,7 @@ class NodeDaemon:
             state = self.chain.state
             nodes = []
             for addr, node in sorted(state.nodes.items()):
-                acc = state.account(addr)
+                acc = state.account_ro(addr)
                 nodes.append({
                     "address": addr,
                     "endpoint": node.endpoint,
@@ -378,7 +378,7 @@ class NodeDaemon:
 
         @app.get("/chain/account/{address}")
         async def chain_account(address: str) -> dict:
-            acc = self.chain.state.account(address)
+            acc = self.chain.state.account_ro(address)
             return {"address": address, "balance": acc.balance, "nonce": acc.nonce, "stake": acc.stake}
 
         @app.get("/chain/receipts")
@@ -836,7 +836,7 @@ class NodeDaemon:
                 })
                 await self.submit_tx(register)
 
-            account = state.account(self.address)
+            account = state.account_ro(self.address)
             if (self.cfg.stake > 0 and account.stake < self.cfg.stake
                     and account.balance >= self.cfg.stake
                     and not any(tx.sender == self.address and tx.type == TxType.STAKE.value
@@ -989,7 +989,7 @@ class NodeDaemon:
         while self._running:
             await asyncio.sleep(params.block_time * 1.5)
             state = self.chain.state
-            account = state.account(self.address)
+            account = state.account_ro(self.address)
             if account.stake < params.min_validator_stake or account.jailed_until > state.height:
                 continue
             for receipt in state.unchecked_receipts():

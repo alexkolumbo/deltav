@@ -348,7 +348,7 @@ class Mempool:
         """
         stale = [
             h for h, tx in self.txs.items()
-            if tx.nonce < state.account(tx.sender).nonce
+            if tx.nonce < state.account_ro(tx.sender).nonce
         ]
         for h in stale:
             del self.txs[h]

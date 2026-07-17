@@ -136,6 +136,19 @@ class State:
             self.accounts[address] = Account()
         return self.accounts[address]
 
+    def account_ro(self, address: str) -> Account:
+        """Read-only account view — never inserts into the live map.
+
+        account() auto-creates on access (apply_tx relies on it), so using it
+        for a mere READ — a nonce, a balance, a status endpoint — silently adds
+        an empty Account to the state and changes the state root. On any node
+        whose own address isn't already in genesis that pollutes the chain
+        state before it finishes syncing, so validate_block sees an extra
+        account and every block fails 'state_root mismatch' — the node can
+        never sync. Reads must go through this instead (audit: new-node sync).
+        """
+        return self.accounts.get(address) or Account()
+
     def clone(self) -> "State":
         return copy.deepcopy(self)
 
