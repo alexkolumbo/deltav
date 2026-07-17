@@ -77,6 +77,15 @@
              font-size:11px; overflow-x:auto; white-space:pre; margin-top:4px; color:var(--fg); }
   .kv { display:flex; justify-content:space-between; gap:10px; font-size:13px; padding:4px 0; color:var(--dim); }
   .kv b { color:var(--fg); font-weight:600; word-break:break-all; text-align:right; }
+  .tabs { display:flex; gap:6px; margin-bottom:6px; }
+  .tab { flex:1; border:1px solid var(--line); background:var(--bg); color:var(--dim); border-radius:8px;
+         padding:8px; font-size:13px; cursor:pointer; }
+  .tab.on { color:#000; background:var(--accent); border-color:var(--accent); font-weight:600; }
+  .sheet select { width:100%; background:var(--bg); color:var(--fg); border:1px solid var(--line);
+                  border-radius:8px; padding:9px 10px; font-size:14px; }
+  .sheet a { color:var(--accent); text-decoration:none; }
+  .banner { background:var(--bg); border:1px solid var(--accent); border-radius:8px; padding:10px;
+            font-size:12px; color:var(--fg); margin-top:10px; line-height:1.5; word-break:break-all; }
 </style>
 </head>
 <body>
@@ -107,29 +116,70 @@
 
 <div class="modal" id="account">
   <div class="sheet wide">
-    <h3>🔑 Подключение и кабинет</h3>
-    <div class="acc-sec">
-      <label>Base URL (OpenAI-совместимый)</label>
-      <div class="copyrow"><code id="a-base"></code><button class="copy" data-copy="a-base">Копировать</button></div>
-      <label>ID модели</label>
-      <div class="copyrow"><code id="a-model"></code><button class="copy" data-copy="a-model">Копировать</button></div>
+    <!-- logged OUT -->
+    <div id="auth-view">
+      <h3>Личный кабинет</h3>
+      <div class="tabs">
+        <button class="tab on" id="tab-login">Вход</button>
+        <button class="tab" id="tab-register">Регистрация</button>
+      </div>
+      <div id="login-form">
+        <label>Имя пользователя</label><input id="lg-user" autocomplete="username">
+        <label>Пароль</label><input id="lg-pass" type="password" autocomplete="current-password">
+        <button class="primary" id="lg-go" style="width:100%;margin-top:14px">Войти</button>
+        <div class="dimnote"><a href="#" id="forgot">Забыли пароль?</a></div>
+      </div>
+      <div id="register-form" style="display:none">
+        <label>Имя пользователя (a–z 0–9 . _ -)</label><input id="rg-user" autocomplete="username">
+        <label>Пароль (минимум 8 символов)</label><input id="rg-pass" type="password" autocomplete="new-password">
+        <button class="primary" id="rg-go" style="width:100%;margin-top:14px">Создать аккаунт</button>
+      </div>
+      <div id="reset-form" style="display:none">
+        <label>Имя пользователя</label><input id="rs-user">
+        <label>Код восстановления</label><input id="rs-code">
+        <label>Новый пароль</label><input id="rs-pass" type="password">
+        <button class="primary" id="rs-go" style="width:100%;margin-top:14px">Сбросить пароль</button>
+        <div class="dimnote"><a href="#" id="back-login">← Назад ко входу</a></div>
+      </div>
+      <div id="auth-note" class="dimnote"></div>
+      <div class="actions"><button id="a-close">Закрыть</button></div>
     </div>
-    <div class="acc-sec">
-      <label>API-ключ</label>
-      <div class="copyrow"><code id="a-key">—</code><button class="copy" data-copy="a-key">Копировать</button></div>
-      <button id="a-newkey" style="width:100%;margin-top:10px">Создать новый API-ключ</button>
-      <div id="a-keynote" class="dimnote"></div>
+    <!-- logged IN -->
+    <div id="dash-view" style="display:none">
+      <h3>👤 <span id="d-user"></span></h3>
+      <div class="acc-sec">
+        <div class="kv"><span>Баланс</span><b id="d-balance">—</b></div>
+        <div class="kv"><span>Запросов</span><b id="d-req">—</b></div>
+        <div class="kv"><span>Токенов</span><b id="d-tok">—</b></div>
+        <div class="kv"><span>Потрачено (оц.)</span><b id="d-spent">—</b></div>
+        <div class="dimnote">Пополнить баланс: <code id="d-fund"></code></div>
+      </div>
+      <div class="acc-sec">
+        <label>Модель по умолчанию</label>
+        <select id="d-model"><option value="auto">auto (авто-выбор живого узла)</option></select>
+      </div>
+      <div class="acc-sec">
+        <label>Base URL (OpenAI-совместимый)</label>
+        <div class="copyrow"><code id="d-base"></code><button class="copy" data-copy="d-base">Копир.</button></div>
+        <label>API-ключ для SDK</label>
+        <div class="copyrow"><code id="d-key">скрыт (виден один раз при выпуске)</code><button class="copy" data-copy="d-key">Копир.</button></div>
+        <button id="d-rotate" style="width:100%;margin-top:8px">Выпустить новый API-ключ</button>
+        <label style="margin-top:12px">Пример запроса</label>
+        <pre id="d-curl" class="snippet"></pre>
+        <button class="copy" data-copy="d-curl" style="width:100%;margin-top:6px">Копировать curl</button>
+      </div>
+      <div class="acc-sec">
+        <label>Сменить пароль</label>
+        <input id="cp-old" type="password" placeholder="текущий пароль">
+        <input id="cp-new" type="password" placeholder="новый пароль (мин. 8)" style="margin-top:6px">
+        <button id="cp-go" style="width:100%;margin-top:8px">Обновить пароль</button>
+      </div>
+      <div id="dash-note" class="dimnote"></div>
+      <div class="actions">
+        <button id="d-logout">Выйти</button>
+        <button class="primary" id="d-close">Готово</button>
+      </div>
     </div>
-    <div class="acc-sec">
-      <label>Личный кабинет</label>
-      <div id="a-account" class="dimnote">Создайте или вставьте dvk_-ключ, чтобы увидеть баланс и расход.</div>
-    </div>
-    <div class="acc-sec">
-      <label>Пример запроса</label>
-      <pre id="a-curl" class="snippet"></pre>
-      <button class="copy" data-copy="a-curl" style="width:100%;margin-top:8px">Копировать curl</button>
-    </div>
-    <div class="actions"><button class="primary" id="a-close">Готово</button></div>
   </div>
 </div>
 
@@ -249,65 +299,136 @@ $("s-cancel").onclick = () => $("settings").classList.remove("on");
 $("s-save").onclick = () => { CFG.base = localStorage.dvBase = $("s-url").value.trim() || apiBase();
   CFG.key = localStorage.dvKey = $("s-key").value.trim() || "deltav"; $("settings").classList.remove("on"); loadModels(); };
 
-// ---- Connect & personal cabinet ----
-document.addEventListener("click", e => {
+// ---- Personal cabinet: auth + dashboard ----
+const AUTH = { token: localStorage.dvAuth || "" };
+if (AUTH.token) CFG.key = AUTH.token;   // logged in -> inference billed to account
+
+document.addEventListener("click", e => {   // copy buttons (delegated)
   const b = e.target.closest(".copy"); if (!b) return;
-  const txt = $(b.dataset.copy).textContent; if (!txt || txt === "—") return;
+  const el = $(b.dataset.copy), txt = el ? el.textContent : "";
+  if (!txt || txt.startsWith("скрыт")) return;
   navigator.clipboard.writeText(txt).then(() => {
-    const old = b.textContent; b.classList.add("done"); b.textContent = "✓ Скопировано";
+    const old = b.textContent; b.classList.add("done"); b.textContent = "✓";
     setTimeout(() => { b.classList.remove("done"); b.textContent = old; }, 1200);
   });
 });
+function authHdr() { return { "Authorization": "Bearer " + AUTH.token }; }
+async function apiPost(path, body, headers) {
+  const r = await fetch(CFG.base + path, { method: "POST",
+    headers: Object.assign({ "Content-Type": "application/json" }, headers || {}),
+    body: JSON.stringify(body || {}) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || ("ошибка " + r.status));
+  return d;
+}
+function showAuthTab(w) {
+  $("login-form").style.display = w === "login" ? "" : "none";
+  $("register-form").style.display = w === "register" ? "" : "none";
+  $("reset-form").style.display = w === "reset" ? "" : "none";
+  $("tab-login").classList.toggle("on", w === "login");
+  $("tab-register").classList.toggle("on", w === "register");
+  $("auth-note").textContent = "";
+}
+$("tab-login").onclick = () => showAuthTab("login");
+$("tab-register").onclick = () => showAuthTab("register");
+$("forgot").onclick = e => { e.preventDefault(); showAuthTab("reset"); };
+$("back-login").onclick = e => { e.preventDefault(); showAuthTab("login"); };
 function openAccount() {
-  const model = $("model").value || "auto";
-  $("a-base").textContent = CFG.base;
-  $("a-model").textContent = model;
-  $("a-key").textContent = (CFG.key && CFG.key.startsWith("dvk_")) ? CFG.key : "—";
-  $("a-curl").textContent =
-    'curl ' + CFG.base + '/v1/chat/completions \\\n' +
-    '  -H "Authorization: Bearer ' + (CFG.key && CFG.key.startsWith("dvk_") ? CFG.key : "dvk_ВАШ_КЛЮЧ") + '" \\\n' +
-    '  -H "Content-Type: application/json" \\\n' +
-    "  -d '{\"model\":\"" + model + "\",\"messages\":[{\"role\":\"user\",\"content\":\"привет\"}]}'";
-  $("a-keynote").textContent = "";
   $("account").classList.add("on");
-  loadCabinet();
+  if (AUTH.token) { $("auth-view").style.display = "none"; $("dash-view").style.display = ""; loadDash(); }
+  else { $("auth-view").style.display = ""; $("dash-view").style.display = "none"; showAuthTab("login"); }
 }
-async function loadCabinet() {
-  const box = $("a-account");
-  if (!CFG.key || !CFG.key.startsWith("dvk_")) {
-    box.textContent = "Создайте или вставьте dvk_-ключ, чтобы увидеть баланс и расход."; return;
-  }
-  box.textContent = "Загрузка…";
-  try {
-    const me = await (await fetch(CFG.base + "/v1/keys/me", { headers: H() })).json();
-    if (!me.address) { box.textContent = me.detail || "Ключ не распознан."; return; }
-    const dvt = x => ((x || 0) / 1e6).toFixed(4) + " DVT";
-    box.innerHTML =
-      '<div class="kv"><span>Адрес</span><b style="font-size:11px">' + me.address + '</b></div>' +
-      '<div class="kv"><span>Баланс</span><b>' + dvt(me.balance_udvt) + '</b></div>' +
-      '<div class="kv"><span>Запросов</span><b>' + (me.requests || 0) + '</b></div>' +
-      '<div class="kv"><span>Токенов</span><b>' + (me.tokens || 0) + '</b></div>' +
-      '<div class="kv"><span>Потрачено (оц.)</span><b>' + dvt(me.spent_udvt_estimate) + '</b></div>' +
-      '<div class="dimnote">Пополнить: <code>deltav send --to ' + me.address + ' --amount &lt;DVT&gt;</code></div>';
-  } catch (e) { box.textContent = "Не удалось загрузить кабинет (проверьте Base URL и ключ)."; }
-}
-$("a-newkey").onclick = async () => {
-  $("a-keynote").textContent = "Создаю ключ…";
-  try {
-    const r = await (await fetch(CFG.base + "/v1/keys", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: "web" }) })).json();
-    if (r.api_key) {
-      CFG.key = localStorage.dvKey = r.api_key;
-      $("a-key").textContent = r.api_key;
-      $("a-keynote").innerHTML = "✓ Ключ создан и сохранён в этом браузере. Пополните адрес <b style='font-size:11px'>" +
-        r.address + "</b> — запросы оплачиваются с него on-chain.";
-      openAccount.lastModel = null; loadCabinet();
-    } else $("a-keynote").textContent = r.detail || "Не удалось создать ключ.";
-  } catch (e) { $("a-keynote").textContent = "Ошибка создания ключа."; }
-};
-$("a-close").onclick = () => $("account").classList.remove("on");
 $("acct").onclick = openAccount;
+$("a-close").onclick = () => $("account").classList.remove("on");
+$("d-close").onclick = () => $("account").classList.remove("on");
+
+function enterSession(token) {
+  AUTH.token = localStorage.dvAuth = token;
+  CFG.key = localStorage.dvKey = token;      // chat billed to the account now
+  $("auth-view").style.display = "none"; $("dash-view").style.display = ""; loadDash();
+}
+$("lg-go").onclick = async () => {
+  $("auth-note").textContent = "Вход…";
+  try { const d = await apiPost("/account/login", { username: $("lg-user").value, password: $("lg-pass").value }); enterSession(d.session); }
+  catch (e) { $("auth-note").textContent = e.message; }
+};
+$("rg-go").onclick = async () => {
+  $("auth-note").textContent = "Создаю аккаунт…";
+  try {
+    const d = await apiPost("/account/register", { username: $("rg-user").value, password: $("rg-pass").value });
+    $("auth-note").innerHTML = '<div class="banner">✓ Аккаунт создан. Сохраните:<br>API-ключ (для SDK, один раз): <b>' +
+      d.api_key + '</b><br>Код восстановления: <b>' + d.recovery_code + '</b></div>';
+    enterSession(d.session);
+    $("d-key").textContent = d.api_key; updateCurl();
+  } catch (e) { $("auth-note").textContent = e.message; }
+};
+$("rs-go").onclick = async () => {
+  $("auth-note").textContent = "Сбрасываю пароль…";
+  try {
+    const d = await apiPost("/account/reset", { username: $("rs-user").value, recovery_code: $("rs-code").value, new_password: $("rs-pass").value });
+    $("auth-note").innerHTML = '<div class="banner">✓ Пароль изменён. Новый код восстановления: <b>' +
+      d.recovery_code + '</b><br>Войдите с новым паролем.</div>';
+    showAuthTab("login");
+  } catch (e) { $("auth-note").textContent = e.message; }
+};
+function updateCurl() {
+  const model = ($("d-model").value) || "auto";
+  const k = ($("d-key").textContent || "").startsWith("dvk_") ? $("d-key").textContent : "dvk_ВАШ_КЛЮЧ";
+  $("d-curl").textContent = 'curl ' + CFG.base + '/v1/chat/completions \\\n  -H "Authorization: Bearer ' + k +
+    '" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"' + model + '","messages":[{"role":"user","content":"привет"}]}\'';
+}
+async function fillModelSelect(pref) {
+  const sel = $("d-model");
+  try {
+    const d = await (await fetch(CFG.base + "/v1/models", { headers: H() })).json();
+    const served = (d.data || []).filter(m => (m.deltav && m.deltav.served_by || []).length);
+    const list = served.length ? served : (d.data || []);
+    sel.innerHTML = '<option value="auto">auto (авто-выбор живого узла)</option>' +
+      list.map(m => '<option value="' + m.id + '">' + m.id.split("/").pop().split("::")[0] +
+        (served.indexOf(m) >= 0 ? " 🔥" : "") + '</option>').join("");
+  } catch (e) {}
+  sel.value = pref || "auto"; if (!sel.value) sel.value = "auto";
+  const hdr = $("model"); if (hdr) hdr.value = sel.value;
+}
+$("d-model").onchange = async () => {
+  try { await apiPost("/account/model", { model: $("d-model").value }, authHdr());
+    const hdr = $("model"); if (hdr) hdr.value = $("d-model").value; updateCurl();
+    $("dash-note").textContent = "Модель по умолчанию сохранена."; }
+  catch (e) { $("dash-note").textContent = e.message; }
+};
+async function loadDash() {
+  $("dash-note").textContent = ""; $("d-base").textContent = CFG.base;
+  try {
+    const me = await (await fetch(CFG.base + "/account/me", { headers: authHdr() })).json();
+    if (!me.username) { logout(); return; }
+    const dvt = x => ((x || 0) / 1e6).toFixed(4) + " DVT";
+    $("d-user").textContent = me.username;
+    $("d-balance").textContent = dvt(me.balance_udvt);
+    $("d-req").textContent = me.requests || 0;
+    $("d-tok").textContent = me.tokens || 0;
+    $("d-spent").textContent = dvt(me.spent_udvt_estimate);
+    $("d-fund").textContent = "deltav send --to " + me.address + " --amount <DVT>";
+    await fillModelSelect(me.model_pref); updateCurl();
+  } catch (e) { $("dash-note").textContent = "Не удалось загрузить кабинет."; }
+}
+$("d-rotate").onclick = async () => {
+  if (!confirm("Старый API-ключ перестанет работать. Продолжить?")) return;
+  try { const d = await apiPost("/account/rotate-key", {}, authHdr());
+    $("d-key").textContent = d.api_key; updateCurl();
+    $("dash-note").innerHTML = '<div class="banner">Новый ключ (показан один раз): <b>' + d.api_key + '</b></div>'; }
+  catch (e) { $("dash-note").textContent = e.message; }
+};
+$("cp-go").onclick = async () => {
+  try { await apiPost("/account/password", { old_password: $("cp-old").value, new_password: $("cp-new").value }, authHdr());
+    $("cp-old").value = $("cp-new").value = ""; $("dash-note").textContent = "Пароль обновлён."; }
+  catch (e) { $("dash-note").textContent = e.message; }
+};
+function logout() {
+  if (AUTH.token) apiPost("/account/logout", {}, authHdr()).catch(() => {});
+  AUTH.token = ""; localStorage.removeItem("dvAuth"); CFG.key = localStorage.dvKey = "deltav";
+  $("dash-view").style.display = "none"; $("auth-view").style.display = ""; showAuthTab("login");
+}
+$("d-logout").onclick = logout;
 
 sendBtn.onclick = onSend;
 input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSend(); } });

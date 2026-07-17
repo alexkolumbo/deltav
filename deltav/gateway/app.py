@@ -130,6 +130,11 @@ class GatewayDaemon:
         # Billing: API keys are custodial on-chain wallets.
         self.keys = KeyStore(keys_path)
         self.require_keys = require_keys
+        # User accounts (username/password personal cabinet) over the same
+        # custodial wallets — accounts.json lives next to keys.json.
+        from .accounts import AccountStore
+        accounts_path = (Path(keys_path).parent / "accounts.json") if keys_path else None
+        self.accounts = AccountStore(accounts_path, self.keys)
         # Slow per-IP limiter on key minting (unauthenticated, rewrites the
         # whole store per call) — ~1 every 10s, small burst.
         self._keys_bucket = _Bucket(0.1, 5.0, time.monotonic)
@@ -189,6 +194,14 @@ class GatewayDaemon:
             record = self.keys.resolve(token)
             if record is None:
                 raise HTTPException(401, "unknown API key")
+            return self.keys.keypair(record), record
+        # A logged-in web session pays from its account's custodial wallet —
+        # same wallet + usage as that account's dvk_ key.
+        if token.startswith("dvs_"):
+            acct = self.accounts.resolve_session(token)
+            record = self.accounts.record_of(acct) if acct else None
+            if record is None:
+                raise HTTPException(401, "session expired — sign in again")
             return self.keys.keypair(record), record
         if self.require_keys:
             raise HTTPException(401, "API key required: POST /v1/keys, then fund its address")
@@ -452,6 +465,101 @@ class GatewayDaemon:
                 "tokens": record.tokens,
                 "spent_udvt_estimate": record.spent_udvt,
             }
+
+        # ---------------------------------------- personal cabinet (accounts)
+        from .accounts import AccountError
+
+        def _session_token(request: Request) -> str:
+            auth = request.headers.get("authorization", "")
+            return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+
+        def _account_or_401(request: Request):
+            acct = self.accounts.resolve_session(_session_token(request))
+            if acct is None:
+                raise HTTPException(401, "sign in to view your cabinet")
+            return acct
+
+        async def _account_view(acct) -> dict:
+            rec = self.accounts.record_of(acct)
+            bal = await self._onchain_balance(acct.address) if rec else 0
+            return {
+                "username": acct.username, "address": acct.address,
+                "balance_udvt": bal, "balance_dvt": round(bal / 1e6, 6),
+                "requests": rec.requests if rec else 0,
+                "tokens": rec.tokens if rec else 0,
+                "spent_udvt_estimate": rec.spent_udvt if rec else 0,
+                "model_pref": acct.model_pref, "created": acct.created,
+            }
+
+        @app.post("/account/register")
+        async def account_register(request: Request, body: dict) -> dict:
+            if not self._keys_bucket.allow(client_ip(request)):
+                raise HTTPException(429, "too many attempts; try again shortly")
+            try:
+                acct, api_key, recovery = self.accounts.register(
+                    body.get("username", ""), body.get("password", ""))
+            except AccountError as exc:
+                raise HTTPException(400, str(exc))
+            token = self.accounts._new_session(acct.username)
+            return {"session": token, "api_key": api_key, "recovery_code": recovery,
+                    "address": acct.address,
+                    "note": "save the recovery code — it resets a forgotten password; "
+                            "fund your address with DVT to pay for requests"}
+
+        @app.post("/account/login")
+        async def account_login(request: Request, body: dict) -> dict:
+            if not self._keys_bucket.allow(client_ip(request)):
+                raise HTTPException(429, "too many attempts; try again shortly")
+            try:
+                token = self.accounts.login(body.get("username", ""), body.get("password", ""))
+            except AccountError as exc:
+                raise HTTPException(401, str(exc))
+            acct = self.accounts.resolve_session(token)
+            return {"session": token, "address": acct.address, "username": acct.username}
+
+        @app.post("/account/logout")
+        async def account_logout(request: Request) -> dict:
+            self.accounts.logout(_session_token(request))
+            return {"ok": True}
+
+        @app.get("/account/me")
+        async def account_me(request: Request) -> dict:
+            return await _account_view(_account_or_401(request))
+
+        @app.post("/account/password")
+        async def account_password(request: Request, body: dict) -> dict:
+            acct = _account_or_401(request)
+            try:
+                self.accounts.change_password(acct.username, body.get("old_password", ""),
+                                              body.get("new_password", ""))
+            except AccountError as exc:
+                raise HTTPException(400, str(exc))
+            return {"ok": True}
+
+        @app.post("/account/reset")
+        async def account_reset(request: Request, body: dict) -> dict:
+            if not self._keys_bucket.allow(client_ip(request)):
+                raise HTTPException(429, "too many attempts; try again shortly")
+            try:
+                new_code = self.accounts.reset_password(
+                    body.get("username", ""), body.get("recovery_code", ""),
+                    body.get("new_password", ""))
+            except AccountError as exc:
+                raise HTTPException(400, str(exc))
+            return {"ok": True, "recovery_code": new_code,
+                    "note": "password changed and sessions revoked; sign in again"}
+
+        @app.post("/account/model")
+        async def account_model(request: Request, body: dict) -> dict:
+            acct = _account_or_401(request)
+            self.accounts.set_model(acct, body.get("model", "auto"))
+            return {"ok": True, "model": acct.model_pref}
+
+        @app.post("/account/rotate-key")
+        async def account_rotate_key(request: Request) -> dict:
+            acct = _account_or_401(request)
+            return {"api_key": self.accounts.rotate_key(acct), "address": acct.address,
+                    "note": "old key revoked; this is shown once"}
 
         @app.get("/v1/registry")
         async def registry_endpoint(vram_mb: int = 8176, kind: str = "chat",
