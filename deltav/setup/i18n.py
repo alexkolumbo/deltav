@@ -139,6 +139,28 @@ M: dict[str, dict[str, str]] = {
                      "ru": "Прервано. Прогресс сохранён — запустите снова, чтобы продолжить."},
     "light_model":  {"en": "Modest hardware — taking the lightest model.",
                      "ru": "Железо скромное — беру самую лёгкую модель."},
+
+    "s_schedule":   {"en": "Auto-start & schedule", "ru": "Автозапуск и расписание"},
+    "autostart_ask":{"en": "Auto-start the node on login so it stays online without babysitting?",
+                     "ru": "Автозапускать ноду при входе в систему, чтобы она держалась в сети сама?"},
+    "schedule_ask": {"en": "Run only during set hours? (No = online 24/7)",
+                     "ru": "Работать только в заданные часы? (Нет = в сети круглосуточно)"},
+    "schedule_start":{"en": "Online from (HH:MM)", "ru": "Онлайн с (ЧЧ:ММ)"},
+    "schedule_end": {"en": "Online until (HH:MM)", "ru": "Онлайн до (ЧЧ:ММ)"},
+    "schedule_bad": {"en": "Couldn't read the times — defaulting to 24/7.",
+                     "ru": "Не разобрал время — оставляю круглосуточно."},
+    "autostart_ok": {"en": "Auto-start installed — the node comes up on its own.",
+                     "ru": "Автозапуск установлен — нода поднимается сама."},
+    "autostart_win":{"en": "Online window {start}–{end}; auto-starts at {start}, stops at {end}.",
+                     "ru": "Окно онлайна {start}–{end}; сам стартует в {start}, останавливается в {end}."},
+    "autostart_fail":{"en": "Couldn't install auto-start — start manually with the script below.",
+                     "ru": "Не удалось поставить автозапуск — запускайте вручную скриптом ниже."},
+    "autostart_skip":{"en": "No auto-start. Start the node with: {script}",
+                     "ru": "Без автозапуска. Запускайте ноду командой: {script}"},
+    "engine_session":{"en": "Note: the GPU engine needs your logged-in desktop session, so keep this "
+                            "user logged in (auto-start fires while you're logged in, even away).",
+                     "ru": "Важно: GPU-движку нужна ваша залогиненная сессия рабочего стола — держите "
+                           "пользователя в системе (автозапуск срабатывает, пока вы залогинены, даже отойдя)."},
 }
 
 

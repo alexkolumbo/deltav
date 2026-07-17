@@ -350,7 +350,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     from .setup import run_setup
 
     return run_setup(home=args.home, seed=args.seed, lang=args.lang,
-                     auto_start=not args.no_start)
+                     auto_start=not args.no_start, relay=args.relay)
 
 
 def _cmd_price(args: argparse.Namespace) -> int:
@@ -835,7 +835,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup = sub.add_parser(
         "setup", help="friendly wizard: bare machine -> live node, step by step")
     p_setup.add_argument("--home", default="", help="install directory (default ~/deltav-node)")
-    p_setup.add_argument("--seed", default="", help="a live node URL to join")
+    p_setup.add_argument("--seed", default="", help="a live node URL to join "
+                         "(use the public …/via/<id> URL so a remote node syncs AND "
+                         "finds the relay)")
+    p_setup.add_argument("--relay", default="", help="relay base URL to tunnel out "
+                         "through (auto-derived from a …/via/ seed if omitted)")
     p_setup.add_argument("--lang", default="", choices=["", "en", "ru"],
                          help="interface language (default: auto-detect)")
     p_setup.add_argument("--no-start", action="store_true",

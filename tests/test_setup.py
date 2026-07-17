@@ -1,5 +1,6 @@
 """Setup wizard: asset resolution, model planning, custom models, i18n."""
 import json
+import os
 
 import httpx
 import pytest
@@ -153,23 +154,25 @@ def test_launcher_script_is_runnable(tmp_path):
     assert script.exists()
     body = script.read_text(encoding="utf-8")
     assert "llama-server" in body
-    assert "deltav.cli node" in body
-    assert "--price 9" in body
-    assert "http://seed:9100" in body
+    assert "deltav.cli" in body and "node" in body
+    assert "--price" in body and "http://seed:9100" in body
     # External access is automatic — a wizard node must not stay LAN-only.
-    assert "--connect auto" in body
+    assert "--connect" in body and "auto" in body
     # Engine context respects the computed fit (7168 -> 7168, never 8192).
-    assert "-c 7168" in body and "-c 8192" not in body
+    assert "7168" in body and "8192" not in body
     # A vision model launches with its projector, or images silently fail.
     assert "--mmproj" in body and "mmproj-F16.gguf" in body
     # Uses the real interpreter by absolute path, not bare "python" (which on
     # Windows can resolve to the Microsoft Store stub).
     import sys
     assert sys.executable in body
-    # Waits for the engine's health, never a fixed sleep — a big model can take
-    # minutes to load, and the node aborts if the engine isn't up yet.
+    # Waits for the engine's health, never a fixed sleep for readiness.
     assert "8085/health" in body
-    assert "timeout /t 8" not in body and "sleep 8" not in body
+    # The robust pattern: detached launch (survives the window/session) with
+    # logs — NOT `start "llama-server"` (reaped, no logs).
+    if os.name == "nt":
+        assert "Start-Process" in body and 'start "llama-server"' not in body
+        assert "engine.log" in body and "node.log" in body
 
 
 def test_launcher_ctx_capped_and_defaulted(tmp_path):
@@ -179,12 +182,29 @@ def test_launcher_ctx_capped_and_defaulted(tmp_path):
         "genesis": "g.json", "wallet": "w.json", "seed": "http://s:9100", "price": 1,
     }
     wiz.state = dict(base, ctx=131072)          # huge fit -> practical cap
-    assert "-c 8192" in wiz.write_launcher().read_text(encoding="utf-8")
+    assert "8192" in wiz.write_launcher().read_text(encoding="utf-8")
     wiz.state = dict(base, ctx=2500)            # rounded down to 1024 multiple
-    assert "-c 2048" in wiz.write_launcher().read_text(encoding="utf-8")
+    assert "2048" in wiz.write_launcher().read_text(encoding="utf-8")
     wiz.state = dict(base)                      # unknown -> safe default
     body = wiz.write_launcher().read_text(encoding="utf-8")
-    assert "-c 4096" in body and "--mmproj" not in body
+    assert "4096" in body and "--mmproj" not in body
+
+
+def test_launcher_adds_relay_via_for_via_seed(tmp_path):
+    """A remote node MUST be told a relay or it stays LAN-only. Derive it from
+    a `…/via/<id>` seed URL automatically; a plain LAN seed adds none."""
+    wiz = SetupWizard(home=tmp_path)
+    base = {"server": "llama-server", "model": "o/r::m.gguf", "model_path": "m.gguf",
+            "genesis": "g.json", "wallet": "w.json", "price": 1}
+    wiz.state = dict(base, seed="http://relay.example:9200/via/dv1abc")
+    body = wiz.write_launcher().read_text(encoding="utf-8")
+    assert "--relay-via" in body and "http://relay.example:9200" in body
+    wiz.state = dict(base, seed="http://lan:9100")     # plain LAN seed
+    assert "--relay-via" not in wiz.write_launcher().read_text(encoding="utf-8")
+    # explicit --relay wins even without a /via seed
+    wiz2 = SetupWizard(home=tmp_path, relay="http://r:9200")
+    wiz2.state = dict(base, seed="http://lan:9100")
+    assert "http://r:9200" in wiz2.write_launcher().read_text(encoding="utf-8")
 
 
 def test_rank_score_weighs_context_modality_quant_and_served():

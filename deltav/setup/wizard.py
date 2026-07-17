@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -90,9 +91,14 @@ def download(url: str, dest: Path, label: str) -> None:
 
 class SetupWizard:
     def __init__(self, home: Path | None = None, seed: str = "",
-                 lang: str = "", client: httpx.Client | None = None):
+                 lang: str = "", client: httpx.Client | None = None,
+                 relay: str = ""):
         self.home = Path(home) if home else DEFAULT_HOME
         self.seed = seed
+        # Relay base the node tunnels through so it's reachable network-wide
+        # (behind NAT/CGNAT). If the seed itself is a `…/via/<id>` URL we can
+        # derive it — a remote operator then needs only the public seed URL.
+        self.relay = relay
         self.t = T(lang or detect_lang())
         self.client = client or httpx.Client(timeout=30.0)
         self.state_file = self.home / "setup.json"
@@ -401,7 +407,11 @@ class SetupWizard:
 
     def connect_network(self, total: int) -> None:
         self.step(6, total, "s_network")
-        seed = self.seed or self.ask(self.t("seed_prompt"), "http://10.0.0.223:9100")
+        # Default to the PUBLIC relay-published seed URL, not a LAN IP: a
+        # remote operator must both fetch genesis/sync AND derive the relay
+        # from it. A `…/via/<id>` seed does all three with zero extra config.
+        default_seed = "http://5.78.65.237:9200/via/dv1cfb5013a0ff17f0977f01eb3630ce9beb25cf6f5"
+        seed = self.seed or self.ask(self.t("seed_prompt"), default_seed)
         genesis_path = self.home / "genesis.json"
         try:
             resp = self.client.get(f"{seed.rstrip('/')}/genesis", timeout=10.0)
@@ -449,54 +459,138 @@ class SetupWizard:
             args += ["--mmproj", self.state["mmproj_path"]]
         return args
 
+    def _relay_base(self) -> str:
+        """The relay this node should tunnel out through. Explicit --relay wins;
+        otherwise derive it from a `…/via/<id>` seed URL (a remote node joins
+        through the same relay the seed is published on). Empty on a pure-LAN
+        setup, where connect=auto stays local."""
+        if self.relay:
+            return self.relay.rstrip("/")
+        m = re.match(r"^(https?://[^/]+)/via/", self.state.get("seed", "") or "")
+        return m.group(1) if m else ""
+
     def _node_args(self) -> list[str]:
         # connect=auto: the node works out its own public address (direct if
         # reachable, else through a relay) — external access with zero config.
+        # A remote/NAT'd node MUST be told a relay, or it stays LAN-only (the
+        # "no relay available — reachable only on the local network" trap).
         s = self.state
-        return ["--genesis", s.get("genesis", ""), "--wallet", s.get("wallet", ""),
+        args = ["--genesis", s.get("genesis", ""), "--wallet", s.get("wallet", ""),
                 "--host", "0.0.0.0", "--port", "9100",
                 "--backend", "llamaserver", "--model", s.get("model", ""),
                 "--data-dir", str(self.home / "data"),
                 "--price", str(s.get("price", 0)),
                 "--peer", s.get("seed", ""), "--connect", "auto"]
+        relay = self._relay_base()
+        if relay:
+            args += ["--relay-via", relay]
+        return args
 
     @staticmethod
     def _sh(args: list[str]) -> str:
         return " ".join(f'"{a}"' if (" " in a or "\\" in a) else a for a in args)
 
+    @staticmethod
+    def _ps_list(args: list[str]) -> str:
+        """Format args as a PowerShell -ArgumentList: each a single-quoted
+        element, so embedded spaces (paths) never split into extra args — the
+        `import`/`logging` split bug that broke the earlier launcher."""
+        return ",".join("'" + str(a).replace("'", "''") + "'" for a in args)
+
+    def _py(self) -> str:
+        # The SAME interpreter the wizard runs under, absolute — bare "python"
+        # on Windows often resolves to the Microsoft Store stub.
+        return sys.executable or "python"
+
     def write_launcher(self) -> Path:
+        """A launcher that SURVIVES: self-cleans a previous run, launches the
+        engine and node as fully detached processes (they outlive the window /
+        the launching session, unlike `start` which gets reaped), waits on the
+        engine's HTTP health (never a fixed sleep), and logs to files so a
+        failure is diagnosable. This is what makes unattended/scheduled runs
+        actually stay up."""
         server = self.state.get("server", "")
-        # Use the SAME interpreter the wizard runs under, by absolute path —
-        # bare "python" on Windows often resolves to the Microsoft Store stub
-        # (which just prints "Python was not found" and exits).
-        py = sys.executable or "python"
-        engine = self._sh([server] + self._engine_args())
-        node = self._sh([py, "-m", "deltav.cli", "node"] + self._node_args())
+        py = self._py()
+        home = str(self.home)
         if os.name == "nt":
             script = self.home / "start-node.bat"
-            # Wait for the engine's HTTP health, not a fixed sleep — a big model
-            # can take minutes to load, and the node aborts if its backend
-            # (the llama-server) isn't reachable yet.
-            wait = ('powershell -NoProfile -Command "for($i=0;$i -lt 150;$i++)'
+            # -FilePath is the exe; -ArgumentList is ONLY the args (never the
+            # exe again, or the program receives its own path as argv[1]).
+            eng = self._ps_list(self._engine_args())
+            nod = self._ps_list(["-m", "deltav.cli", "node"] + self._node_args())
+            wait = ('powershell -NoProfile -Command "for($i=0;$i -lt 180;$i++)'
                     '{try{Invoke-WebRequest -UseBasicParsing '
-                    'http://127.0.0.1:8085/health -TimeoutSec 2 | Out-Null;break}'
-                    'catch{Start-Sleep 2}}"')
-            body = (f'@echo off\r\nstart "llama-server" {engine}\r\n'
-                    f"{wait}\r\n{node}\r\n")
+                    'http://127.0.0.1:8085/health -TimeoutSec 2 | Out-Null;'
+                    "Write-Host 'engine up';exit 0}catch{Start-Sleep 2}};exit 1\"")
+            body = (
+                "@echo off\r\n"
+                "title DeltaV Node\r\n"
+                "echo [DeltaV] Cleaning any previous run...\r\n"
+                "taskkill /F /IM llama-server.exe >nul 2>&1\r\n"
+                'for /f "tokens=5" %%p in (\'netstat -ano ^| findstr ":9100 " '
+                "^| findstr LISTENING') do taskkill /F /PID %%p >nul 2>&1\r\n"
+                "timeout /t 2 >nul\r\n"
+                "echo [DeltaV] Launching engine...\r\n"
+                f'powershell -NoProfile -Command "Start-Process -FilePath \'{server}\' '
+                f"-ArgumentList {eng} -RedirectStandardOutput '{home}\\engine.log' "
+                f"-RedirectStandardError '{home}\\engine.err' -WindowStyle Minimized\"\r\n"
+                "echo [DeltaV] Waiting for engine (up to 6 min)...\r\n"
+                f"{wait}\r\n"
+                "if errorlevel 1 goto fail\r\n"
+                "echo [DeltaV] Launching node...\r\n"
+                f'powershell -NoProfile -Command "Start-Process -FilePath \'{py}\' '
+                f"-ArgumentList {nod} -RedirectStandardOutput '{home}\\node.log' "
+                f"-RedirectStandardError '{home}\\node.err' -WindowStyle Minimized\"\r\n"
+                "echo [DeltaV] Node launched. Engine + node keep running after "
+                "you close this window.\r\n"
+                "timeout /t 8\r\n"
+                "goto end\r\n"
+                ":fail\r\n"
+                f"echo [DeltaV] ENGINE FAILED TO START. See {home}\\engine.err\r\n"
+                "pause\r\n"
+                ":end\r\n"
+            )
         else:
             script = self.home / "start-node.sh"
-            wait = ('i=0; while [ $i -lt 150 ]; do '
+            engine = self._sh([server] + self._engine_args())
+            node = self._sh([py, "-m", "deltav.cli", "node"] + self._node_args())
+            wait = ('i=0; while [ $i -lt 180 ]; do '
                     'curl -sf http://127.0.0.1:8085/health >/dev/null 2>&1 && break; '
                     'sleep 2; i=$((i+1)); done')
-            body = f"#!/bin/sh\n{engine} &\n{wait}\n{node}\n"
+            body = (
+                "#!/bin/sh\n"
+                "# self-clean a previous run so a restart binds cleanly\n"
+                "pkill -f 'llama-server' 2>/dev/null; "
+                "fuser -k 9100/tcp 2>/dev/null; sleep 2\n"
+                f'nohup {engine} >"{home}/engine.log" 2>&1 &\n'
+                f"{wait}\n"
+                f'exec {node} >"{home}/node.log" 2>&1\n'
+            )
         script.write_text(body, encoding="utf-8")
         if os.name != "nt":
+            os.chmod(script, 0o755)
+        return script
+
+    def write_stopper(self) -> Path:
+        """A stop script (window-close / manual stop) that kills the node and
+        its local engine by listening port, never a blanket process kill."""
+        from .schedule import render_windows_stopper
+        if os.name == "nt":
+            script = self.home / "stop-node.bat"
+            script.write_text(render_windows_stopper(home=str(self.home)),
+                              encoding="utf-8")
+        else:
+            script = self.home / "stop-node.sh"
+            script.write_text(
+                "#!/bin/sh\npkill -f 'deltav.cli node' 2>/dev/null; "
+                "pkill -f 'llama-server' 2>/dev/null\n", encoding="utf-8")
             os.chmod(script, 0o755)
         return script
 
     def launch(self, total: int, auto_start: bool = True) -> None:
         self.step(8, total, "s_launch")
         script = self.write_launcher()
+        stopper = self.write_stopper()
         s = self.state
         ready = s.get("server") and s.get("model_path") and s.get("genesis")
         if not ready:
@@ -506,7 +600,40 @@ class SetupWizard:
         if not auto_start:
             self.ok(self.t("ready_run"))
             say(f"    {script}")
+            self._finish(script)
             return
+
+        # Auto-start (persistence) + optional daily schedule — the turnkey
+        # path: the node comes up on its own and survives logout/reboot, so
+        # nobody has to babysit a terminal.
+        if self.ask_yes("autostart_ask", default=True):
+            from .schedule import Schedule
+            schedule = Schedule.always()
+            if self.ask_yes("schedule_ask", default=False):
+                start = self.ask(self.t("schedule_start"), "09:00")
+                end = self.ask(self.t("schedule_end"), "23:00")
+                try:
+                    schedule = Schedule.daily(start, end)
+                except ValueError:
+                    self.warn(self.t("schedule_bad"))
+                    schedule = Schedule.always()
+            self.state["schedule"] = (
+                {"start": schedule.window.start, "end": schedule.window.end}
+                if schedule.window else "always")
+            self._save_state()
+            if self._install_autostart(script, stopper, schedule):
+                self.ok(self.t("autostart_ok"))
+                if schedule.window is not None:
+                    self.note(self.t("autostart_win", start=schedule.window.start,
+                                     end=schedule.window.end))
+                if s.get("server"):
+                    self.note(self.t("engine_session"))
+                self._finish(script)
+                return
+            self.warn(self.t("autostart_fail"))
+            # fall through to a direct one-off start
+
+        # Direct start (no persistence, or auto-start install failed).
         self.note(self.t("starting"))
         llama = subprocess.Popen(
             [s["server"]] + self._engine_args(),
@@ -523,6 +650,43 @@ class SetupWizard:
         if not self._wait_health("http://127.0.0.1:9100/health", 60):
             self.warn(self.t("node_slow"))
         self._finish(script)
+
+    def _install_autostart(self, launcher: Path, stopper: Path, schedule) -> bool:
+        """Register the OS scheduler so the node auto-starts (and, for a
+        window, stops at close). Windows: Task Scheduler (interactive logon —
+        the GPU engine gets a desktop session, no stored password). Linux:
+        systemd *user* units. Returns True if it installed cleanly."""
+        from .schedule import (render_windows_ps, apply_windows,
+                               render_systemd_units, write_linux_units)
+        import datetime
+        if os.name == "nt":
+            # start now unless we're outside a configured window
+            start_now = True
+            if schedule.window is not None:
+                now = datetime.datetime.now().strftime("%H:%M")
+                w = schedule.window
+                start_now = (w.start <= now < w.end) if not w.wraps_midnight \
+                    else (now >= w.start or now < w.end)
+            ps = render_windows_ps(python=self._py(), launcher=str(launcher),
+                                   stopper=str(stopper), node_argline="",
+                                   home=str(self.home), schedule=schedule,
+                                   start_now=start_now)
+            ok, _ = apply_windows(ps)
+            return ok
+        try:
+            import getpass
+            units = render_systemd_units(launcher=str(launcher), home=str(self.home),
+                                         user=getpass.getuser(), schedule=schedule)
+            unit_dir = Path.home() / ".config" / "systemd" / "user"
+            write_linux_units(units, unit_dir)
+            subprocess.run(["systemctl", "--user", "daemon-reload"], timeout=15, check=False)
+            enable = (["deltav-node.service"] if schedule.window is None
+                      else ["deltav-node-start.timer", "deltav-node-stop.timer"])
+            subprocess.run(["systemctl", "--user", "enable", "--now", *enable],
+                           timeout=20, check=False)
+            return True
+        except (OSError, subprocess.SubprocessError):
+            return False
 
     def _wait_health(self, url: str, timeout: int) -> bool:
         deadline = time.monotonic() + timeout
@@ -576,6 +740,7 @@ def _forced_spec(repo: str, filename: str):
                      params_b=0.0, quant="?", file_mb=0, quality=0.5, max_ctx=32768)
 
 
-def run_setup(home: str = "", seed: str = "", lang: str = "", auto_start: bool = True) -> int:
-    SetupWizard(home=home or None, seed=seed, lang=lang).run(auto_start=auto_start)
+def run_setup(home: str = "", seed: str = "", lang: str = "", auto_start: bool = True,
+              relay: str = "") -> int:
+    SetupWizard(home=home or None, seed=seed, lang=lang, relay=relay).run(auto_start=auto_start)
     return 0
