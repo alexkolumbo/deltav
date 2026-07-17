@@ -229,3 +229,38 @@ def test_v1_mints_emission_at_receipt_and_single_check_latches():
     st.apply_tx(Tx(type=TxType.SPOT_CHECK.value, sender=v1.address, nonce=0,
                    payload={"receipt_hash": r.receipt_hash, "ok": True}).sign(v1), 2)
     assert r.checked and r.check_ok is True
+    # And critically: the v1 state root must NOT carry the chain-v2 node/receipt
+    # fields, or a fresh node re-validating from genesis hits 'state_root
+    # mismatch' at the first register/receipt block and can never sync.
+    ndict = st.to_dict()["nodes"][node.address]
+    assert "pending_emission" not in ndict and "lease_until" not in ndict
+    rdict = st.to_dict()["receipts"][r.receipt_hash]
+    for k in ("settle_key", "emission", "ok_checks", "fail_checks",
+              "checked_by", "disputed", "dispute_deadline", "settled"):
+        assert k not in rdict, f"v2 field {k} leaked into the v1 receipt root"
+    # non-v2 fields still serialize as before (reputation moved after the check)
+    assert "reputation" in ndict and rdict["deterministic"] is True
+
+
+def test_state_root_backward_compat_omits_default_v2_fields():
+    """Direct guard on the serializer: v2 fields vanish at their default and
+    reappear once set, keeping historical (version=1) roots byte-stable while
+    staying deterministic for version=2."""
+    from deltav.chain.state import Receipt
+
+    st = State(_params(version=1))
+    a = "dv1" + "0" * 40
+    st.nodes[a] = NodeInfo(address=a, endpoint="http://n")          # defaults
+    st.nodes["dv1" + "1" * 40] = NodeInfo(address="dv1" + "1" * 40, endpoint="http://m",
+                                          pending_emission=7, lease_until=42)  # set
+    default_node = st.to_dict()["nodes"][a]
+    set_node = st.to_dict()["nodes"]["dv1" + "1" * 40]
+    assert "pending_emission" not in default_node and "lease_until" not in default_node
+    assert set_node["pending_emission"] == 7 and set_node["lease_until"] == 42
+
+    st.receipts["h"] = Receipt(receipt_hash="h", node=a, requester="r", model="m",
+                               request_hash="rh", output_hash="o", seed=0,
+                               tokens_in=1, tokens_out=1, price_paid=1, height=1)
+    rd = st.to_dict()["receipts"]["h"]
+    assert not ({"settle_key", "emission", "ok_checks", "fail_checks", "checked_by",
+                 "disputed", "dispute_deadline", "settled"} & set(rd))

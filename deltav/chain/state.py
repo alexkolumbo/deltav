@@ -89,6 +89,29 @@ def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 
+# chain-v2 added fields to NodeInfo/Receipt. The alpha-3 (version=1) state
+# root was computed WITHOUT them, so serializing them unconditionally makes a
+# fresh node's re-validated root diverge from the recorded one at the first
+# register/receipt block — new nodes could never sync. Omitting each v2 field
+# while it sits at its default keeps historical roots byte-identical (in a
+# version=1 chain these code paths never run, so the fields stay default and
+# vanish), and stays deterministic for version=2 (producer and validator run
+# the same rule). Mirrors the settled_auths treatment in to_dict.
+_NODE_V2_DEFAULTS = {"pending_emission": 0, "lease_until": 0}
+_RECEIPT_V2_DEFAULTS = {
+    "settle_key": "", "emission": 0, "ok_checks": 0, "fail_checks": 0,
+    "checked_by": [], "disputed": False, "dispute_deadline": 0, "settled": False,
+}
+
+
+def _compat_asdict(obj, v2_defaults: dict) -> dict:
+    d = asdict(obj)
+    for key, default in v2_defaults.items():
+        if d.get(key) == default:
+            d.pop(key, None)
+    return d
+
+
 class State:
     def __init__(self, params: ChainParams):
         self.params = params
@@ -123,8 +146,10 @@ class State:
             "pool": self.pool,
             "randao": self.randao,
             "accounts": {a: asdict(acc) for a, acc in sorted(self.accounts.items())},
-            "nodes": {a: asdict(n) for a, n in sorted(self.nodes.items())},
-            "receipts": {h: asdict(r) for h, r in sorted(self.receipts.items())},
+            "nodes": {a: _compat_asdict(n, _NODE_V2_DEFAULTS)
+                      for a, n in sorted(self.nodes.items())},
+            "receipts": {h: _compat_asdict(r, _RECEIPT_V2_DEFAULTS)
+                         for h, r in sorted(self.receipts.items())},
             **({"settled_auths": sorted(self.settled_auths)} if self.settled_auths else {}),
         }
 
