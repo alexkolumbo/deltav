@@ -290,11 +290,17 @@ class SetupWizard:
     # --------------------------------------------------------------- engine
     def install_engine(self, total: int) -> None:
         self.step(3, total, "s_engine")
-        server = self.llama_dir / ("llama-server.exe" if os.name == "nt" else "llama-server")
-        if server.exists():
+        exe_name = "llama-server.exe" if os.name == "nt" else "llama-server"
+        # Search the whole tree (the zip extracts into a subfolder), matching
+        # the EXACT executable name — not "llama-server*", which also matches
+        # llama-server-impl.dll and would then fail to launch (WinError 193).
+        found = next((p for p in self.llama_dir.rglob(exe_name)
+                      if p.is_file() and p.name == exe_name), None)
+        if found:
             self.ok(self.t("engine_have"))
-            self.state["server"] = str(server)
+            self.state["server"] = str(found)
             return
+        server = self.llama_dir / exe_name
         self.note(self.t("engine_dl"))
         try:
             rel = self.client.get(LLAMA_RELEASES, timeout=30.0).json()
@@ -315,8 +321,8 @@ class SetupWizard:
         download(assets[chosen.filename], zip_path, "engine")
         with zipfile.ZipFile(zip_path) as zf:
             _safe_extract(zf, self.llama_dir)
-        found = next((p for p in self.llama_dir.rglob("llama-server*")
-                      if p.name.startswith("llama-server")), None)
+        found = next((p for p in self.llama_dir.rglob(exe_name)
+                      if p.is_file() and p.name == exe_name), None)
         if found:
             server = found
         try:
