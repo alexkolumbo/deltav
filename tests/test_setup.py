@@ -282,6 +282,29 @@ def test_connect_network_saves_genesis(tmp_path):
     assert g.params.chain_id == "deltav-test"
 
 
+def test_connect_network_auto_uses_public_seed_without_prompting(tmp_path, monkeypatch):
+    """No --seed → the node connects to the public seed automatically; the
+    wizard must NOT prompt for a seed address (that last step is gone)."""
+    genesis_dict = {
+        "params": {"chain_id": "deltav-alpha-3", "price_per_token": 10},
+        "alloc": {}, "stakes": {}, "timestamp": 0.0,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/genesis"):            # seed is a /via/<id> URL
+            return httpx.Response(200, json=genesis_dict)
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    wiz = SetupWizard(home=tmp_path, client=client)          # no seed passed
+    def _no_prompt(*a):
+        raise AssertionError("wizard must not prompt for a seed")
+    monkeypatch.setattr("builtins.input", _no_prompt)
+    wiz.connect_network(8)
+    assert wiz.state["seed"].startswith("http://5.78.65.237:9200/via/")
+    assert wiz.state["genesis"]
+
+
 def test_connect_network_unreachable_is_graceful(tmp_path):
     def handler(request):
         raise httpx.ConnectError("down", request=request)

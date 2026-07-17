@@ -411,7 +411,9 @@ class SetupWizard:
         # remote operator must both fetch genesis/sync AND derive the relay
         # from it. A `…/via/<id>` seed does all three with zero extra config.
         default_seed = "http://5.78.65.237:9200/via/dv1cfb5013a0ff17f0977f01eb3630ce9beb25cf6f5"
-        seed = self.seed or self.ask(self.t("seed_prompt"), default_seed)
+        # No prompt: the node connects to the public seed automatically. Pass
+        # --seed only to join a private/alternate network.
+        seed = self.seed or default_seed
         genesis_path = self.home / "genesis.json"
         try:
             resp = self.client.get(f"{seed.rstrip('/')}/genesis", timeout=10.0)
