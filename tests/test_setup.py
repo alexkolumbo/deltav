@@ -162,6 +162,14 @@ def test_launcher_script_is_runnable(tmp_path):
     assert "-c 7168" in body and "-c 8192" not in body
     # A vision model launches with its projector, or images silently fail.
     assert "--mmproj" in body and "mmproj-F16.gguf" in body
+    # Uses the real interpreter by absolute path, not bare "python" (which on
+    # Windows can resolve to the Microsoft Store stub).
+    import sys
+    assert sys.executable in body
+    # Waits for the engine's health, never a fixed sleep — a big model can take
+    # minutes to load, and the node aborts if the engine isn't up yet.
+    assert "8085/health" in body
+    assert "timeout /t 8" not in body and "sleep 8" not in body
 
 
 def test_launcher_ctx_capped_and_defaulted(tmp_path):

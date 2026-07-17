@@ -44,9 +44,17 @@ class LlamaServerBackend(ComputeBackend):
 
     @classmethod
     def is_available(cls) -> bool:
-        url = (os.environ.get("LLAMA_SERVER_URL") or DEFAULT_URL).rstrip("/")
+        # This backend is just an HTTP client to a llama-server, so the type is
+        # always usable. Whether the server is UP right now is a runtime state,
+        # not a capability — gating node startup on it made the node crash if
+        # its engine was still loading (or momentarily down). A down server now
+        # surfaces as a clear per-request error and drops the node's health,
+        # and the router routes around it — which is the correct behaviour.
+        return True
+
+    def server_healthy(self) -> bool:
         try:
-            return httpx.get(f"{url}/health", timeout=2.0).status_code == 200
+            return self.client.get(f"{self.base_url}/health", timeout=2.0).status_code == 200
         except httpx.HTTPError:
             return False
 

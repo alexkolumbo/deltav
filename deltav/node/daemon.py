@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -765,14 +766,26 @@ class NodeDaemon:
         log.info("relay connectivity via %s — announcing %s", relay_url, via)
 
     async def _discover_relay(self, peers) -> str:
-        """Find a relay: prefer on-chain nodes advertising relay capability,
-        then fall back to probing our seed peers."""
-        candidates = [
+        """Find a relay to tunnel through. Order of preference:
+        1. The relay we're ALREADY reaching the network through — if a seed/
+           peer URL is itself a `…/via/<id>` relay URL, its base is a live
+           relay, so a node that joined via a relay auto-relays through the
+           same one (no --relay-via needed for a remote/NAT'd node).
+        2. On-chain nodes advertising relay capability.
+        3. Any seed/peer that answers /relay/info.
+        """
+        all_urls = list(peers) + list(self.cfg.peers)
+        via_bases: list[str] = []
+        for url in all_urls:
+            m = re.match(r"^(https?://[^/]+)/via/", url or "")
+            if m and m.group(1) not in via_bases:
+                via_bases.append(m.group(1))
+        candidates = via_bases + [
             n.endpoint for n in self.chain.state.nodes.values()
             if n.active and n.address != self.address
             and isinstance(n.hardware, dict) and n.hardware.get("relay")
         ]
-        candidates += [p for p in peers if p not in candidates]
+        candidates += [p for p in all_urls if p not in candidates]
         for url in candidates:
             try:
                 resp = await self.client.get(f"{url.rstrip('/')}/relay/info", timeout=5.0)

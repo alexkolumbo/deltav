@@ -466,15 +466,29 @@ class SetupWizard:
 
     def write_launcher(self) -> Path:
         server = self.state.get("server", "")
+        # Use the SAME interpreter the wizard runs under, by absolute path —
+        # bare "python" on Windows often resolves to the Microsoft Store stub
+        # (which just prints "Python was not found" and exits).
+        py = sys.executable or "python"
         engine = self._sh([server] + self._engine_args())
-        node = self._sh(["python", "-m", "deltav.cli", "node"] + self._node_args())
+        node = self._sh([py, "-m", "deltav.cli", "node"] + self._node_args())
         if os.name == "nt":
             script = self.home / "start-node.bat"
+            # Wait for the engine's HTTP health, not a fixed sleep — a big model
+            # can take minutes to load, and the node aborts if its backend
+            # (the llama-server) isn't reachable yet.
+            wait = ('powershell -NoProfile -Command "for($i=0;$i -lt 150;$i++)'
+                    '{try{Invoke-WebRequest -UseBasicParsing '
+                    'http://127.0.0.1:8085/health -TimeoutSec 2 | Out-Null;break}'
+                    'catch{Start-Sleep 2}}"')
             body = (f'@echo off\r\nstart "llama-server" {engine}\r\n'
-                    f"timeout /t 8 >nul\r\n{node}\r\n")
+                    f"{wait}\r\n{node}\r\n")
         else:
             script = self.home / "start-node.sh"
-            body = f"#!/bin/sh\n{engine} &\nsleep 8\n{node}\n"
+            wait = ('i=0; while [ $i -lt 150 ]; do '
+                    'curl -sf http://127.0.0.1:8085/health >/dev/null 2>&1 && break; '
+                    'sleep 2; i=$((i+1)); done')
+            body = f"#!/bin/sh\n{engine} &\n{wait}\n{node}\n"
         script.write_text(body, encoding="utf-8")
         if os.name != "nt":
             os.chmod(script, 0o755)
