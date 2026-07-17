@@ -196,7 +196,8 @@ def _cmd_relay(args: argparse.Namespace) -> int:
     from .net.relay import build_relay_app
 
     public = args.public_url or f"http://{args.host}:{args.port}"
-    app = build_relay_app(public, max_origins=args.max_origins)
+    app = build_relay_app(public, max_origins=args.max_origins,
+                          via_timeout=args.via_timeout, poll_timeout=args.poll_timeout)
     print(f"relay on http://{args.host}:{args.port}  public: {public}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0
@@ -797,6 +798,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_relay.add_argument("--port", type=int, default=9200)
     p_relay.add_argument("--public-url", default="",
                          help="externally reachable base URL (defaults to host:port)")
+    p_relay.add_argument("--via-timeout", type=float, default=180.0,
+                         help="seconds a tunnelled /via request waits for the origin "
+                              "(high so slow vision inference doesn't 504)")
+    p_relay.add_argument("--poll-timeout", type=float, default=20.0,
+                         help="seconds a /relay/pull long-poll blocks before 204")
     p_relay.add_argument("--max-origins", type=int, default=256,
                          help="max NAT'd origins tunneled at once")
     p_relay.set_defaults(func=_cmd_relay)

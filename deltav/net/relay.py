@@ -207,21 +207,30 @@ class RelayServer:
                             headers=headers)
 
 
-def build_relay_app(public_url: str, *, max_origins: int = 256) -> FastAPI:
+def build_relay_app(public_url: str, *, max_origins: int = 256,
+                    via_timeout: float = 180.0, poll_timeout: float = 20.0) -> FastAPI:
     """A standalone relay-only app (`deltav relay`): just the circuit relay
     plus hardening — no chain, no compute. Run it on any public machine to
-    help NAT'd nodes and gateways become reachable."""
+    help NAT'd nodes and gateways become reachable.
+
+    via_timeout defaults high (180s) because tunnelled inference isn't always
+    fast: a vision request ships a full image through the long-poll and the
+    serving node processes it on a possibly-slow GPU. At the old 30s an honest
+    but slow vision call returned 504 to the gateway (all candidates "failed").
+    """
     from .security import install_guards
 
     app = FastAPI(title="Delta V relay", version="0.1.0")
     install_guards(app)
-    server = RelayServer(public_url, max_origins=max_origins)
+    server = RelayServer(public_url, max_origins=max_origins,
+                         via_timeout=via_timeout, poll_timeout=poll_timeout)
     server.mount(app)
 
     @app.get("/health")
     async def health() -> dict:
         return {"relay": True, "public_url": server.public_url,
-                "origins": server.origin_count, "capacity": server.max_origins}
+                "origins": server.origin_count, "capacity": server.max_origins,
+                "via_timeout": server.via_timeout, "poll_timeout": server.poll_timeout}
 
     return app
 
