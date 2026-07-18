@@ -29,6 +29,12 @@ M: dict[str, dict[str, str]] = {
 
     "s_model":      {"en": "Choosing an AI model for your hardware",
                      "ru": "Подбираю модель ИИ под ваше железо"},
+    "ports_busy":   {"en": "Ports {ports} are already in use — another node/engine is running here.",
+                     "ru": "Порты {ports} уже заняты — на этой машине уже работает узел/движок."},
+    "ports_busy2":  {"en": "NOT starting: the launcher self-cleans those ports and would kill it. "
+                           "Stop the other node first, or run this one on another machine.",
+                     "ru": "Запуск отменён: лаунчер чистит эти порты и убил бы соседа. "
+                           "Остановите тот узел или поднимите этот на другой машине."},
     # --- image (draw-only) node ---
     "s_image_model": {"en": "Setting up the image model (FLUX.1-schnell)",
                       "ru": "Настраиваю модель для картинок (FLUX.1-schnell)"},

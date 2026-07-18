@@ -555,6 +555,16 @@ class SetupWizard:
         `import`/`logging` split bug that broke the earlier launcher."""
         return ",".join("'" + str(a).replace("'", "''") + "'" for a in args)
 
+    @staticmethod
+    def _port_in_use(port: int) -> bool:
+        """Something already listening on 127.0.0.1:port? Used to refuse a
+        launch that would kill an existing node/engine."""
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.4)
+            return sock.connect_ex(("127.0.0.1", port)) == 0
+
     def _py(self) -> str:
         # The SAME interpreter the wizard runs under, absolute — bare "python"
         # on Windows often resolves to the Microsoft Store stub.
@@ -688,6 +698,18 @@ class SetupWizard:
         if not auto_start:
             self.ok(self.t("ready_run"))
             say(f"    {script}")
+            self._finish(script)
+            return
+
+        # SAFETY: the launcher self-cleans 9100/8085 (taskkill llama-server +
+        # kill whatever listens on 9100). If another node/engine already owns
+        # them, starting this one would take THAT one down — on a machine
+        # running the live seed that means killing the network. Refuse instead.
+        busy = [p for p in (9100, 8085) if self._port_in_use(p)]
+        if busy:
+            self.warn(self.t("ports_busy", ports=", ".join(str(p) for p in busy)))
+            self.note(self.t("ports_busy2"))
+            self.note(self.t("script_saved", path=script))
             self._finish(script)
             return
 

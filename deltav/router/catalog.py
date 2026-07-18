@@ -142,6 +142,14 @@ CURATED_CATALOG: list[ModelSpec] = [
     ModelSpec("bartowski/gemma-2-27b-it-GGUF", "gemma-2-27b-it-Q4_K_M.gguf",
               "gemma2", 27.2, "Q4_K_M", 16600, 0.89,
               n_layers=46, n_kv_heads=16, head_dim=128, max_ctx=8192),
+    # Bonsai: a 27B (Qwen3.6-based) ternary-compressed to ~3.6 GB, so it runs
+    # on an 8 GB card where a normal 27B cannot. Apache-2.0. Reasoning model
+    # (answers land in content, the chain of thought in reasoning_content).
+    # NOTE: Q1_0 is NOT a mainline llama.cpp quant — a node serving this needs
+    # the PrismML fork build of llama-server, not a stock release.
+    ModelSpec("prism-ml/Bonsai-27B-gguf", "Bonsai-27B-Q1_0.gguf",
+              "bonsai", 27.0, "Q1_0", 3627, 0.84,
+              n_layers=62, n_kv_heads=8, head_dim=128, max_ctx=262144),
     # Reasoning + vision 9B (Qwen-based); thinks in reasoning_content.
     ModelSpec("empero-ai/Qwythos-9B-Claude-Mythos-5-1M-GGUF",
               "Qwythos-9B-Claude-Mythos-5-1M-Q4_K_M.gguf",
