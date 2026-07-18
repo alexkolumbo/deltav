@@ -92,9 +92,13 @@ def download(url: str, dest: Path, label: str) -> None:
 class SetupWizard:
     def __init__(self, home: Path | None = None, seed: str = "",
                  lang: str = "", client: httpx.Client | None = None,
-                 relay: str = ""):
+                 relay: str = "", image: bool = False):
         self.home = Path(home) if home else DEFAULT_HOME
         self.seed = seed
+        # Draw-only node: diffusers/FLUX instead of llama.cpp + a GGUF chat
+        # model. Different engine, different model, and the launcher has no
+        # separate engine process to wait on.
+        self.image_mode = image
         # Relay base the node tunnels through so it's reachable network-wide
         # (behind NAT/CGNAT). If the seed itself is a `…/via/<id>` URL we can
         # derive it — a remote operator then needs only the public seed URL.
@@ -110,6 +114,11 @@ class SetupWizard:
 
     # ---------------------------------------------------------- presentation
     def step(self, n: int, total: int, key: str) -> None:
+        # A draw-only run has one step fewer before the shared tail (no GGUF
+        # download), so the shared steps renumber here instead of every caller
+        # having to know about the mode.
+        if self.image_mode and n >= 4:
+            n -= 1
         say(f"\n{C_ACCENT}[{n}/{total}] {self.t(key)}{C_RESET}")
 
     def note(self, text: str) -> None:
@@ -177,6 +186,40 @@ class SetupWizard:
         self.state["device"] = d.to_dict()
 
     # ------------------------------------------------------------ model pick
+    def pick_image_model(self, total: int) -> None:
+        """Draw-only node: one fixed, commercially-servable model. No ranking
+        or GGUF picking — FLUX.1-schnell is the Apache-2.0 choice a paid
+        network may actually serve."""
+        from ..compute.diffusion import DEFAULT_IMAGE_MODEL
+
+        self.step(2, total, "s_image_model")
+        vram = getattr(self.device, "vram_mb", 0) or 0
+        human = f"{vram / 1024:.1f} GB" if vram else "?"
+        # ~8 GB is the realistic floor with model CPU offload enabled.
+        if vram >= 8 * 1024:
+            self.ok(self.t("image_vram_ok", vram=human))
+        else:
+            self.warn(self.t("image_vram_low", vram=human))
+        self.state["model"] = DEFAULT_IMAGE_MODEL
+        self.state["model_path"] = ""          # a repo, not a single file
+        self.state["server"] = ""              # no separate engine process
+        self.note(self.t("image_dl_note"))
+
+    def check_image_deps(self, total: int) -> None:
+        """torch is CUDA-build-specific, so we never install it behind the
+        operator's back — we check and tell them the exact commands."""
+        self.step(3, total, "s_image_deps")
+        try:
+            import diffusers  # noqa: F401
+            import torch  # noqa: F401
+        except ImportError:
+            self.warn(self.t("image_deps_missing"))
+            self.note("  pip install torch --index-url "
+                      "https://download.pytorch.org/whl/cu124")
+            self.note('  pip install "deltav-network[image]"')
+            return
+        self.ok(self.t("image_deps_ok"))
+
     def pick_model(self, total: int) -> None:
         self.step(2, total, "s_model")
         catalog = Catalog()
@@ -485,9 +528,10 @@ class SetupWizard:
         wallet = s.get("wallet") or str(self.home / "node.wallet.json")
         model = s.get("model") or ""
         seed = s.get("seed") or "http://5.78.65.237:9200/via/dv1cfb5013a0ff17f0977f01eb3630ce9beb25cf6f5"
+        backend = "diffusers" if self.image_mode else "llamaserver"
         args = ["--genesis", genesis, "--wallet", wallet,
                 "--host", "0.0.0.0", "--port", "9100",
-                "--backend", "llamaserver",
+                "--backend", backend,
                 "--data-dir", str(self.home / "data"),
                 "--price", str(s.get("price", 0)),
                 "--peer", seed, "--connect", "auto"]
@@ -536,14 +580,37 @@ class SetupWizard:
                     '{try{Invoke-WebRequest -UseBasicParsing '
                     'http://127.0.0.1:8085/health -TimeoutSec 2 | Out-Null;'
                     "Write-Host 'engine up';exit 0}catch{Start-Sleep 2}};exit 1\"")
+            node_launch = (
+                "echo [DeltaV] Launching node...\r\n"
+                f'powershell -NoProfile -Command "Start-Process -FilePath \'{py}\' '
+                f"-ArgumentList {nod} -RedirectStandardOutput '{home}\\node.log' "
+                f"-RedirectStandardError '{home}\\node.err' -WindowStyle Minimized\"\r\n"
+            )
+            clean = (
+                "echo [DeltaV] Cleaning any previous run...\r\n"
+                # a draw-only node has no llama-server to kill
+                + ("" if self.image_mode
+                   else "taskkill /F /IM llama-server.exe >nul 2>&1\r\n")
+                + 'for /f "tokens=5" %%p in (\'netstat -ano ^| findstr ":9100 " '
+                "^| findstr LISTENING') do taskkill /F /PID %%p >nul 2>&1\r\n"
+                "timeout /t 2 >nul\r\n"
+            )
+            if self.image_mode:
+                # No separate engine process: the diffusion pipeline lives
+                # inside the node and warms up in the background on start.
+                return self._write(script, (
+                    "@echo off\r\n"
+                    "title DeltaV Image Node\r\n"
+                    + clean + node_launch +
+                    "echo [DeltaV] Image node launched. First start downloads the\r\n"
+                    "echo [DeltaV] model and warms the pipeline (several minutes).\r\n"
+                    f"echo [DeltaV] Logs: {home}\\node.log\r\n"
+                    "timeout /t 8\r\n"
+                ))
             body = (
                 "@echo off\r\n"
                 "title DeltaV Node\r\n"
-                "echo [DeltaV] Cleaning any previous run...\r\n"
-                "taskkill /F /IM llama-server.exe >nul 2>&1\r\n"
-                'for /f "tokens=5" %%p in (\'netstat -ano ^| findstr ":9100 " '
-                "^| findstr LISTENING') do taskkill /F /PID %%p >nul 2>&1\r\n"
-                "timeout /t 2 >nul\r\n"
+                + clean +
                 "echo [DeltaV] Launching engine...\r\n"
                 f'powershell -NoProfile -Command "Start-Process -FilePath \'{server}\' '
                 f"-ArgumentList {eng} -RedirectStandardOutput '{home}\\engine.log' "
@@ -551,10 +618,7 @@ class SetupWizard:
                 "echo [DeltaV] Waiting for engine (up to 6 min)...\r\n"
                 f"{wait}\r\n"
                 "if errorlevel 1 goto fail\r\n"
-                "echo [DeltaV] Launching node...\r\n"
-                f'powershell -NoProfile -Command "Start-Process -FilePath \'{py}\' '
-                f"-ArgumentList {nod} -RedirectStandardOutput '{home}\\node.log' "
-                f"-RedirectStandardError '{home}\\node.err' -WindowStyle Minimized\"\r\n"
+                + node_launch +
                 "echo [DeltaV] Node launched. Engine + node keep running after "
                 "you close this window.\r\n"
                 "timeout /t 8\r\n"
@@ -571,6 +635,13 @@ class SetupWizard:
             wait = ('i=0; while [ $i -lt 180 ]; do '
                     'curl -sf http://127.0.0.1:8085/health >/dev/null 2>&1 && break; '
                     'sleep 2; i=$((i+1)); done')
+            if self.image_mode:
+                # Draw-only: the pipeline runs inside the node, no engine.
+                return self._write(script, (
+                    "#!/bin/sh\n"
+                    "fuser -k 9100/tcp 2>/dev/null; sleep 2\n"
+                    f'exec {node} >"{home}/node.log" 2>&1\n'
+                ))
             body = (
                 "#!/bin/sh\n"
                 "# self-clean a previous run so a restart binds cleanly\n"
@@ -580,6 +651,9 @@ class SetupWizard:
                 f"{wait}\n"
                 f'exec {node} >"{home}/node.log" 2>&1\n'
             )
+        return self._write(script, body)
+
+    def _write(self, script: Path, body: str) -> Path:
         script.write_text(body, encoding="utf-8")
         if os.name != "nt":
             os.chmod(script, 0o755)
@@ -729,13 +803,18 @@ class SetupWizard:
     # --------------------------------------------------------------- driver
     def run(self, auto_start: bool = True) -> dict:
         self._load_state()
-        total = 8
+        # A draw-only node has no engine binary and no GGUF file to fetch.
+        total = 7 if self.image_mode else 8
         self.welcome()
         try:
             self.detect_hardware(total); self._save_state()
-            self.pick_model(total); self._save_state()
-            self.install_engine(total); self._save_state()
-            self.download_model(total); self._save_state()
+            if self.image_mode:
+                self.pick_image_model(total); self._save_state()
+                self.check_image_deps(total); self._save_state()
+            else:
+                self.pick_model(total); self._save_state()
+                self.install_engine(total); self._save_state()
+                self.download_model(total); self._save_state()
             self.setup_wallet(total); self._save_state()
             self.connect_network(total); self._save_state()
             self.set_price(total); self._save_state()
@@ -755,6 +834,7 @@ def _forced_spec(repo: str, filename: str):
 
 
 def run_setup(home: str = "", seed: str = "", lang: str = "", auto_start: bool = True,
-              relay: str = "") -> int:
-    SetupWizard(home=home or None, seed=seed, lang=lang, relay=relay).run(auto_start=auto_start)
+              relay: str = "", image: bool = False) -> int:
+    SetupWizard(home=home or None, seed=seed, lang=lang, relay=relay,
+                image=image).run(auto_start=auto_start)
     return 0

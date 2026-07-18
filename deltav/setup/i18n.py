@@ -29,6 +29,24 @@ M: dict[str, dict[str, str]] = {
 
     "s_model":      {"en": "Choosing an AI model for your hardware",
                      "ru": "Подбираю модель ИИ под ваше железо"},
+    # --- image (draw-only) node ---
+    "s_image_model": {"en": "Setting up the image model (FLUX.1-schnell)",
+                      "ru": "Настраиваю модель для картинок (FLUX.1-schnell)"},
+    "s_image_deps":  {"en": "Checking the image engine (torch + diffusers)",
+                      "ru": "Проверяю движок картинок (torch + diffusers)"},
+    "image_vram_ok": {"en": "{vram} VRAM — the pipeline fits (CPU offload below 24 GB).",
+                      "ru": "{vram} видеопамяти — пайплайн влезет (ниже 24 ГБ включается CPU-offload)."},
+    "image_vram_low": {"en": "Only {vram} VRAM — FLUX needs ~8 GB even offloaded; "
+                             "generation may fail or be very slow.",
+                       "ru": "Всего {vram} видеопамяти — FLUX требует ~8 ГБ даже с офлоадом; "
+                             "генерация может не пойти или будет очень медленной."},
+    "image_deps_ok": {"en": "torch + diffusers are installed.",
+                      "ru": "torch и diffusers установлены."},
+    "image_deps_missing": {"en": "torch/diffusers missing — install them, then re-run:",
+                           "ru": "нет torch/diffusers — установите и запустите визард заново:"},
+    "image_dl_note": {"en": "The model (~24 GB) downloads on first start and the node "
+                            "warms it up in the background.",
+                      "ru": "Модель (~24 ГБ) скачается при первом запуске, узел прогреет её в фоне."},
     "recommend":    {"en": "Recommended: {name}", "ru": "Рекомендую: {name}"},
     "model_specs":  {"en": "{b}B params, fits ~{ctx} tokens of context",
                      "ru": "{b}B параметров, влезает контекст ~{ctx} токенов"},

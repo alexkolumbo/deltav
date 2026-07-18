@@ -198,6 +198,48 @@ def test_launcher_never_emits_empty_node_args(tmp_path):
     assert "--model" not in argline                         # dropped when empty
 
 
+def test_image_mode_configures_a_draw_only_node(tmp_path):
+    """`deltav setup --image` sets up a diffusion node: the diffusers backend
+    and the FLUX repo, with a launcher that has NO llama.cpp engine process and
+    nothing to health-wait on (the pipeline runs inside the node)."""
+    wiz = SetupWizard(home=tmp_path, image=True)
+    wiz.state = {"genesis": str(tmp_path / "genesis.json"),
+                 "wallet": str(tmp_path / "node.wallet.json"),
+                 "model": "black-forest-labs/FLUX.1-schnell",
+                 "seed": "http://relay:9200/via/dv1cfb", "price": 9}
+    args = wiz._node_args()
+    assert args[args.index("--backend") + 1] == "diffusers"
+    assert "black-forest-labs/FLUX.1-schnell" in args
+    assert all(a != "" for a in args)
+
+    body = wiz.write_launcher().read_text(encoding="utf-8")
+    assert "diffusers" in body
+    assert "llama-server" not in body      # no engine binary to launch or kill
+    assert "8085/health" not in body       # nothing to wait for
+
+
+def test_text_mode_keeps_the_engine(tmp_path):
+    """The default (chat) path must be untouched by the image branch."""
+    wiz = SetupWizard(home=tmp_path)
+    wiz.state = {"server": str(tmp_path / "llama-server"), "model": "o/r::m.gguf",
+                 "model_path": str(tmp_path / "m.gguf"),
+                 "genesis": str(tmp_path / "g.json"),
+                 "wallet": str(tmp_path / "w.json"),
+                 "seed": "http://seed:9100", "price": 9}
+    body = wiz.write_launcher().read_text(encoding="utf-8")
+    assert "8085/health" in body and "llamaserver" in body
+
+
+def test_image_mode_picks_the_apache_model_and_no_engine(tmp_path, capsys):
+    from deltav.compute.base import DeviceInfo
+
+    wiz = SetupWizard(home=tmp_path, image=True)
+    wiz.device = DeviceInfo(vendor="nvidia", name="RTX 5080", vram_mb=16303)
+    wiz.pick_image_model(7)
+    assert wiz.state["model"] == "black-forest-labs/FLUX.1-schnell"
+    assert wiz.state["server"] == ""        # a draw-only node has no engine exe
+
+
 def test_launcher_ctx_capped_and_defaulted(tmp_path):
     wiz = SetupWizard(home=tmp_path)
     base = {

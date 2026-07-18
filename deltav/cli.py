@@ -367,7 +367,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     from .setup import run_setup
 
     return run_setup(home=args.home, seed=args.seed, lang=args.lang,
-                     auto_start=not args.no_start, relay=args.relay)
+                     auto_start=not args.no_start, relay=args.relay,
+                     image=args.image)
 
 
 def _cmd_price(args: argparse.Namespace) -> int:
@@ -860,6 +861,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "finds the relay)")
     p_setup.add_argument("--relay", default="", help="relay base URL to tunnel out "
                          "through (auto-derived from a …/via/ seed if omitted)")
+    p_setup.add_argument("--image", action="store_true",
+                         help="set up a text-to-image node (diffusers / "
+                              "FLUX.1-schnell) instead of a chat node")
     p_setup.add_argument("--lang", default="", choices=["", "en", "ru"],
                          help="interface language (default: auto-detect)")
     p_setup.add_argument("--no-start", action="store_true",
