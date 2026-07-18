@@ -623,19 +623,23 @@ class GatewayDaemon:
             await self.router.refresh(self.node_urls)
             await self._precheck_funds(record, task, int(body.get("max_tokens", 512)) * 2)
 
-            spent = {"tokens": 0}
+            spent = {"tokens": 0, "model": "", "node": ""}
 
-            async def complete(prompt: str) -> tuple[str, dict]:
-                result = await self.router.route(
-                    prompt=prompt, model=model,
-                    max_tokens=int(body.get("max_tokens", 512)),
-                    temperature=float(body.get("temperature") or 0.0),
-                    seed=int(body.get("seed") or 0),
-                    requester=payer,
-                )
-                spent["tokens"] += result.tokens_in + result.tokens_out
-                return result.text, {"node": result.node, "receipt_tx": result.receipt_tx}
+            def _make_complete(use_model: str):
+                async def complete(prompt: str) -> tuple[str, dict]:
+                    result = await self.router.route(
+                        prompt=prompt, model=use_model,
+                        max_tokens=int(body.get("max_tokens", 512)),
+                        temperature=float(body.get("temperature") or 0.0),
+                        seed=int(body.get("seed") or 0),
+                        requester=payer,
+                    )
+                    spent["tokens"] += result.tokens_in + result.tokens_out
+                    spent["model"], spent["node"] = result.model_ref, result.node
+                    return result.text, {"node": result.node, "receipt_tx": result.receipt_tx}
+                return complete
 
+            complete = _make_complete(model)
             registry = self._agent_registry(complete, session_id, max_steps)
 
             memory_used: list[dict] = []
@@ -653,6 +657,26 @@ class GatewayDaemon:
                 result = await agent.run(agent_task)
             except RouteError as exc:
                 raise HTTPException(503, str(exc))
+
+            # Hitting the step limit means the MODEL wouldn't converge, not that
+            # the node failed — retrying the same model elsewhere would loop the
+            # same way. So escalate once to a DIFFERENT served model (hence a
+            # different node) before handing back a non-answer.
+            escalated_to = ""
+            if not result.finished:
+                alt = next((m for m in self._distinct_models(4)
+                            if m and m != spent.get("model", "")), "")
+                if alt:
+                    alt_complete = _make_complete(alt)
+                    alt_agent = Agent(alt_complete,
+                                      self._agent_registry(alt_complete, session_id, max_steps),
+                                      max_steps=max_steps)
+                    try:
+                        retry = await alt_agent.run(agent_task)
+                        if retry.finished or (retry.answer and not result.answer):
+                            result, escalated_to = retry, alt
+                    except RouteError:
+                        pass          # keep the first result if the alternate is unroutable
             if record is not None:
                 self.keys.record_usage(record, spent["tokens"],
                                        spent["tokens"] * self.params.price_per_token)
@@ -662,6 +686,9 @@ class GatewayDaemon:
                 "answer": result.answer,
                 "finished": result.finished,
                 "model_calls": result.model_calls,
+                # non-empty when the first model wouldn't converge and the task
+                # was re-run on another served model/node
+                "escalated_to": escalated_to,
                 "memory_used": [{"id": h["id"], "text": h["text"], "score": h["score"]}
                                 for h in memory_used],
                 "steps": [

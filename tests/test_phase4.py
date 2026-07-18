@@ -151,6 +151,38 @@ async def test_agent_step_limit():
     assert len(result.steps) == 3
 
 
+async def test_step_limit_wraps_up_instead_of_discarding_the_work():
+    """Out of steps the agent must NOT hand back an error string — it already
+    gathered observations. It makes one final tool-free call and answers from
+    them; finished stays False so the caller can still escalate to another
+    model/node."""
+    calls = {"n": 0}
+
+    async def complete(prompt: str):
+        calls["n"] += 1
+        if "no steps left" in prompt:                     # the wrap-up turn
+            return "From what I gathered: 42.", {}
+        return '<tool_call>{"name": "lookup", "arguments": {"query": "x"}}</tool_call>', {}
+
+    agent = Agent(complete, stub_registry(), max_steps=3)
+    result = await agent.run("loop forever")
+    assert result.answer == "From what I gathered: 42."
+    assert not result.finished                            # escalation still allowed
+    assert len(result.steps) == 3 and calls["n"] == 4     # 3 loop turns + wrap-up
+
+
+async def test_step_limit_keeps_message_when_wrapup_yields_nothing():
+    """If even the tool-free wrap-up only emits another tool call, we fall back
+    to the explicit message rather than an empty answer."""
+    async def complete(prompt: str):
+        return '<tool_call>{"name": "lookup", "arguments": {"query": "x"}}</tool_call>', {}
+
+    agent = Agent(complete, stub_registry(), max_steps=2)
+    result = await agent.run("loop forever")
+    assert result.answer == "(agent stopped: step limit reached)"
+    assert not result.finished
+
+
 # ------------------------------------------------------- gateway overlay e2e
 
 @pytest.fixture

@@ -68,6 +68,20 @@ class Agent:
                 "assistant:"
             )
 
-        result.answer = "(agent stopped: step limit reached)"
+        # Out of steps. Throwing the work away and returning an error string is
+        # the worst outcome — the loop has already gathered N observations. Make
+        # ONE final tool-free call so the user gets a real answer built from
+        # them; finished stays False so the caller can still escalate.
         result.finished = False
+        prompt += (
+            " \ntool (budget): no steps left. Answer the user NOW using the "
+            "observations above. Do NOT call any tool.\nassistant:"
+        )
+        try:
+            text, _ = await self.complete(prompt)
+            result.model_calls += 1
+            answer = strip_tool_calls(text).strip()
+        except Exception:                      # a failed wrap-up must not mask the run
+            answer = ""
+        result.answer = answer or "(agent stopped: step limit reached)"
         return result
