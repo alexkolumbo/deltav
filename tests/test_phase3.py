@@ -26,8 +26,14 @@ def test_pick_model_4070():
 
 
 def test_pick_model_small_gpu():
+    """What matters is that the pick FITS the card, not its parameter count:
+    a ternary-compressed 27B (Bonsai, 3.6 GB) runs on 8 GB where a 14B Q4
+    doesn't, so params_b is no longer a size proxy."""
+    from deltav.router.catalog import estimate_vram_mb
+
     spec = pick_model_for_device(DeviceInfo(vendor="amd", name="RX 6600", vram_mb=8192))
-    assert spec is not None and 6 <= spec.params_b <= 10  # a 7-9B-class model
+    assert spec is not None
+    assert estimate_vram_mb(spec) <= 8192
 
 
 @pytest.fixture

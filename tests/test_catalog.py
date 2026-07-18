@@ -9,7 +9,10 @@ def test_curated_catalog_sane():
     assert len(CURATED_CATALOG) >= 8
     for spec in CURATED_CATALOG:
         assert spec.file_mb > 0 and 0 < spec.quality <= 1
-        assert "::" in spec.ref
+        # A GGUF spec names a concrete file inside the repo (repo::file). A
+        # repo-style spec — a diffusers pipeline, an API relay — has no single
+        # file and is referenced by repo id alone (see ModelSpec.ref).
+        assert ("::" in spec.ref) == bool(spec.filename)
 
 
 def test_4070_fits_14b_not_32b():
@@ -27,11 +30,18 @@ def test_best_for_4070_is_highest_quality_fit():
     assert estimate_vram_mb(best) <= RTX_4070_MB
 
 
-def test_8gb_falls_back_to_mid_model():
+def test_8gb_picks_the_best_model_that_actually_fits():
+    """Parameter count is NOT a size proxy any more: a ternary-compressed 27B
+    (Bonsai, 3.6 GB) genuinely runs on an 8 GB card while a 14B Q4 does not.
+    So assert the real constraint — it fits the VRAM — and that we didn't pick
+    one of the uncompressed giants."""
     best = Catalog().best_for(RTX_3060_MB)
     assert best is not None
-    assert 6 <= best.params_b <= 10  # a 7-9B-class model, not a 14B+
     assert estimate_vram_mb(best) <= RTX_3060_MB
+    assert best.repo_id not in {
+        "Qwen/Qwen2.5-32B-Instruct-GGUF",
+        "bartowski/Llama-3.3-70B-Instruct-GGUF",
+    }
 
 
 def test_tiny_vram_still_gets_a_model():
