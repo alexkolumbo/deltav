@@ -198,6 +198,20 @@ def test_launcher_never_emits_empty_node_args(tmp_path):
     assert "--model" not in argline                         # dropped when empty
 
 
+def test_windows_installer_invokes_python_safely():
+    """Regression: `$PY[1..($PY.Count-1)]` on a ONE-element array is PowerShell's
+    DESCENDING range 1..0, so it yielded the interpreter name back as an
+    argument and the installer ran `python.exe python -m pip ...` →
+    "can't open file '…\\python'". Keep the slice-free shape."""
+    from pathlib import Path
+
+    ps1 = (Path(__file__).resolve().parents[1] / "install.ps1").read_text(encoding="utf-8")
+    # Only CODE — the fix's own comment quotes the broken idiom on purpose.
+    code = "\n".join(l for l in ps1.splitlines() if not l.strip().startswith("#"))
+    assert "Count-1" not in code and "Count - 1" not in code, "range-slice bug is back"
+    assert "& $script:PyExe @($script:PyPre + $args)" in code
+
+
 def test_image_mode_configures_a_draw_only_node(tmp_path):
     """`deltav setup --image` sets up a diffusion node: the diffusers backend
     and the FLUX repo, with a launcher that has NO llama.cpp engine process and
