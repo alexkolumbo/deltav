@@ -135,6 +135,10 @@ class ComputeBackend(ABC):
             yield result.text
         yield result
 
+    # False for draw-only engines (diffusion): `auto` must never hand a text
+    # node a backend whose infer() raises.
+    text_capable: bool = True
+
     # Extra job types this backend can serve (defaults off).
     supports_embeddings: bool = False
     supports_vision: bool = False       # image input to a chat model
@@ -170,7 +174,7 @@ def make_backend(name: str = "auto") -> ComputeBackend:
     # Imports here so optional heavy deps never load unless needed.
     # Order = "auto" preference: local GPU first (in-process, then a local
     # llama-server), API relays after, mock last.
-    from . import llamacpp, llamaserver, groq, asic, mock  # noqa: F401  (registration side effect)
+    from . import llamacpp, llamaserver, groq, asic, diffusion, mock  # noqa: F401  (registration side effect)
 
     if name != "auto":
         for cls in BACKENDS:
@@ -181,6 +185,8 @@ def make_backend(name: str = "auto") -> ComputeBackend:
         raise ValueError(f"unknown backend {name!r}; known: {[c.name for c in BACKENDS]}")
 
     for cls in BACKENDS:
-        if cls.is_available():
+        # auto = a general-purpose node: never pick a draw-only engine here,
+        # it would blow up on the first text job.
+        if cls.is_available() and cls.text_capable:
             return cls()
     raise RuntimeError("no compute backend available")

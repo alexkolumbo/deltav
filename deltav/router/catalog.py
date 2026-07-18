@@ -161,6 +161,11 @@ CURATED_CATALOG: list[ModelSpec] = [
               "sd", 0.98, "Q4_0", 1700, 0.60, kind="image", max_ctx=0),
     ModelSpec("second-state/FLUX.1-schnell-GGUF", "flux1-schnell-Q4_0.gguf",
               "flux", 12.0, "Q4_0", 6800, 0.80, kind="image", max_ctx=0),
+    # --- diffusion via HF diffusers (DiffusersBackend), full-precision repo ---
+    # Apache-2.0, so a paid network may serve it (unlike FLUX.1-dev/Ideogram).
+    # No filename => ref is the bare repo id, which is what the node announces.
+    ModelSpec("black-forest-labs/FLUX.1-schnell", "",
+              "flux", 12.0, "bf16", 24000, 0.86, kind="image", max_ctx=0),
     # Embedding models (routed by kind, never picked for chat).
     ModelSpec("nomic-ai/nomic-embed-text-v1.5-GGUF", "nomic-embed-text-v1.5.Q4_K_M.gguf",
               "nomic", 0.14, "Q4_K_M", 84, 0.60, ctx=2048, kind="embedding",

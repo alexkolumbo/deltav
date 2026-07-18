@@ -17,6 +17,16 @@ dependencies = [
 [project.optional-dependencies]
 gpu = ["llama-cpp-python>=0.2.79"]
 hub = ["huggingface_hub>=0.23"]
+# Text-to-image (FLUX.1-schnell et al). Heavy and CUDA-specific, hence opt-in:
+#   pip install "deltav-network[image]"   (install torch for your CUDA first)
+image = [
+    "diffusers>=0.31",
+    "transformers>=4.44",
+    "accelerate>=0.33",
+    "sentencepiece>=0.2",
+    "protobuf>=4",
+    "pillow>=10",
+]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
 
 [project.scripts]

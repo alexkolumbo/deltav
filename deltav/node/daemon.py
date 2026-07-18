@@ -691,6 +691,7 @@ class NodeDaemon:
         self._tasks.append(asyncio.create_task(self._connectivity_bootstrap()))
         if self.cfg.auto_register:
             self._tasks.append(asyncio.create_task(self._register_loop()))
+        self._tasks.append(asyncio.create_task(self._warmup_backend()))
         self._tasks.append(asyncio.create_task(self._producer_loop()))
         self._tasks.append(asyncio.create_task(self._sync_loop()))
         self._tasks.append(asyncio.create_task(self._discovery_loop()))
@@ -710,6 +711,23 @@ class NodeDaemon:
         self._tasks.clear()
         if self._owns_client:
             await self.client.aclose()
+
+    async def _warmup_backend(self) -> None:
+        """Pre-load the announced models in the background.
+
+        Without this the FIRST job pays the cold-start: for a diffusion
+        pipeline that's a multi-GB download plus init — minutes, far past any
+        client (or relay) timeout, so the very first image request always
+        failed. load() is a no-op for engines that pre-load out of process
+        (llama-server) or need nothing (mock), so this is safe for all.
+        """
+        for ref in list(self.cfg.models):
+            if not ref:
+                continue
+            try:
+                await asyncio.to_thread(self.backend.load, ref)
+            except Exception as exc:                  # never block the node
+                log.warning("model warm-up failed for %s: %s", ref, exc)
 
     # -------------------------------------------------------- connectivity
     async def _connectivity_bootstrap(self) -> None:
