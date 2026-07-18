@@ -183,14 +183,17 @@ class TgBot:
     async def served_models(self) -> list[tuple[str, int, bool]]:
         """(ref, how many nodes serve it, vision?) for models the network can
         ACTUALLY answer with right now. The catalog lists many more; offering
-        those would just produce 'no node serves X'."""
+        those would just produce 'no node serves X'.
+
+        kind is checked too: the seed also serves an embedding model, and
+        picking that one for a chat would fail on every message."""
         data = (await self.client.get(f"{self.gateway}/v1/models",
                                       headers=self.gw_headers)).json()
         out = []
         for m in data.get("data", []):
             dv = m.get("deltav") or {}
             nodes = len(dv.get("served_by") or [])
-            if nodes:
+            if nodes and dv.get("kind", "chat") == "chat":
                 out.append((m["id"], nodes, bool(dv.get("vision"))))
         return sorted(out, key=lambda t: -t[1])
 

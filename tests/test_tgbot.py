@@ -16,11 +16,15 @@ GW = "http://gw.test"
 MODELS_PAYLOAD = {
     "data": [
         {"id": "prism-ml/Bonsai-27B-gguf::Bonsai-27B-Q1_0.gguf",
-         "deltav": {"served_by": ["dv1a"], "vision": False}},
+         "deltav": {"served_by": ["dv1a"], "vision": False, "kind": "chat"}},
         {"id": "empero-ai/Qwythos-9B-GGUF::Qwythos-9B-Q4_K_M.gguf",
-         "deltav": {"served_by": ["dv1a", "dv1b"], "vision": True}},
+         "deltav": {"served_by": ["dv1a", "dv1b"], "vision": True, "kind": "chat"}},
         {"id": "bartowski/Llama-3.3-70B-Instruct-GGUF::L-Q4.gguf",
-         "deltav": {"served_by": [], "vision": False}},          # nobody serves it
+         "deltav": {"served_by": [], "vision": False, "kind": "chat"}},  # nobody serves it
+        {"id": "nomic-ai/nomic-embed-text-v1.5-GGUF::nomic-embed.gguf",
+         "deltav": {"served_by": ["dv1c"], "vision": False, "kind": "embedding"}},
+        {"id": "black-forest-labs/FLUX.1-schnell",
+         "deltav": {"served_by": ["dv1d"], "vision": False, "kind": "image"}},
     ]
 }
 
@@ -50,6 +54,14 @@ async def test_served_models_hides_what_no_node_serves():
     assert len(models) == 2
     # busiest first, and vision is flagged
     assert models[0][1] == 2 and models[0][2] is True
+
+
+async def test_served_models_offers_only_chat_models():
+    """The seed serves an embedding model too (and a node may serve an image
+    one). Picking either for a chat fails on every single message."""
+    bot = _bot([])
+    refs = [ref for ref, _, _ in await bot.served_models()]
+    assert not any("nomic-embed" in r or "FLUX" in r for r in refs)
 
 
 async def test_model_keyboard_uses_indexes_not_refs():
