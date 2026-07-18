@@ -147,8 +147,10 @@ CURATED_CATALOG: list[ModelSpec] = [
     # (answers land in content, the chain of thought in reasoning_content).
     # NOTE: Q1_0 is NOT a mainline llama.cpp quant — a node serving this needs
     # the PrismML fork build of llama-server, not a stock release.
+    # vision=True needs the engine started with --mmproj Bonsai-27B-mmproj-Q8_0.gguf,
+    # otherwise the router sends images to a node that can't read them.
     ModelSpec("prism-ml/Bonsai-27B-gguf", "Bonsai-27B-Q1_0.gguf",
-              "bonsai", 27.0, "Q1_0", 3627, 0.84,
+              "bonsai", 27.0, "Q1_0", 3627, 0.84, vision=True,
               n_layers=62, n_kv_heads=8, head_dim=128, max_ctx=262144),
     # Reasoning + vision 9B (Qwen-based); thinks in reasoning_content.
     ModelSpec("empero-ai/Qwythos-9B-Claude-Mythos-5-1M-GGUF",

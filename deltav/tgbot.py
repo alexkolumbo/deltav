@@ -48,6 +48,9 @@ class TgBot:
         self.client = client or httpx.AsyncClient(timeout=330.0)
         self.histories: dict[int, list[dict]] = {}
         self.models: dict[int, str] = {}   # chat_id -> chosen model
+        # chat_id -> the model list a picker was last drawn from, so a button
+        # press (which can only carry a tiny payload) maps back to a full ref.
+        self._model_choices: dict[int, list[str]] = {}
         # "smart" = every message goes through the agent (web search when
         # the model decides it needs it); "fast" = plain chat, no tools.
         self.modes: dict[int, str] = {}
@@ -177,15 +180,50 @@ class TgBot:
         history.append({"role": "assistant", "content": answer.split("\n\n·")[0][:1500]})
         return answer
 
+    async def served_models(self) -> list[tuple[str, int, bool]]:
+        """(ref, how many nodes serve it, vision?) for models the network can
+        ACTUALLY answer with right now. The catalog lists many more; offering
+        those would just produce 'no node serves X'."""
+        data = (await self.client.get(f"{self.gateway}/v1/models",
+                                      headers=self.gw_headers)).json()
+        out = []
+        for m in data.get("data", []):
+            dv = m.get("deltav") or {}
+            nodes = len(dv.get("served_by") or [])
+            if nodes:
+                out.append((m["id"], nodes, bool(dv.get("vision"))))
+        return sorted(out, key=lambda t: -t[1])
+
+    @staticmethod
+    def short_name(ref: str) -> str:
+        return ref.split("::")[0].split("/")[-1]
+
     async def do_models(self) -> str:
-        data = (await self.client.get(f"{self.gateway}/v1/models", headers=self.gw_headers)).json()
+        models = await self.served_models()
+        if not models:
+            return "Сейчас сеть не отдаёт ни одной модели — узлы офлайн."
         lines = ["Модели на сети:"]
-        for m in data["data"]:
-            served = len(m["deltav"]["served_by"])
-            if served:
-                lines.append(f"• {m['id'].split('::')[0]}  ({served} нод)")
-        lines.append("\n/model <repo или auto> — выбрать")
+        for ref, nodes, vision in models:
+            lines.append(f"• {self.short_name(ref)}{' 👁' if vision else ''}  ({nodes} нод)")
+        lines.append("\n/model — выбрать кнопкой")
         return "\n".join(lines)
+
+    async def model_keyboard(self, chat_id: int) -> tuple[str, dict]:
+        """Inline picker built from what the network serves. Telegram caps
+        callback_data at 64 bytes and model refs run far longer, so buttons
+        carry an INDEX into a per-chat snapshot of the list."""
+        models = await self.served_models()
+        if not models:
+            return "Сейчас сеть не отдаёт ни одной модели — узлы офлайн.", {}
+        self._model_choices[chat_id] = [ref for ref, _, _ in models]
+        current = self.models.get(chat_id, "auto")
+        rows = [[{"text": ("✅ " if current == "auto" else "") + "auto (сеть выберет сама)",
+                  "callback_data": "m:auto"}]]
+        for i, (ref, nodes, vision) in enumerate(models):
+            mark = "✅ " if ref == current else ""
+            label = f"{mark}{self.short_name(ref)}{' 👁' if vision else ''} · {nodes}"
+            rows.append([{"text": label, "callback_data": f"m:{i}"}])
+        return f"Текущая модель: {self.short_name(current)}\nВыберите:", {"inline_keyboard": rows}
 
     async def do_net(self) -> str:
         data = (await self.client.get(f"{self.gateway}/network", headers=self.gw_headers)).json()
@@ -214,8 +252,8 @@ class TgBot:
         "/fast — быстрый режим без инструментов\n"
         "/smart — вернуть агентский режим (по умолчанию)\n"
         "/agent <задача> — явный запуск агента\n"
-        "/model [ref|auto] — выбрать модель\n"
-        "/models — что доступно\n"
+        "/model — выбрать модель кнопкой (список берётся из сети)\n"
+        "/models — что сеть отдаёт прямо сейчас\n"
         "/net — состояние сети\n"
         "/plan [vram_mb] — что запускать на железе\n"
         "/id — ваш Telegram ID (для allowlist)\n"
@@ -231,8 +269,49 @@ class TgBot:
             self._seen.popitem(last=False)
         return False
 
+    async def handle_callback(self, cq: dict) -> None:
+        """A tap on the model picker. Telegram wants every callback answered,
+        or the client spins on the button forever."""
+        cq_id = cq.get("id")
+        data = cq.get("data") or ""
+        msg = cq.get("message") or {}
+        chat_id = (msg.get("chat") or {}).get("id")
+        user_id = (cq.get("from") or {}).get("id")
+        if not chat_id or not self.allowed(user_id):
+            await self.tg("answerCallbackQuery", callback_query_id=cq_id, text="⛔ нет доступа")
+            return
+        if not data.startswith("m:"):
+            await self.tg("answerCallbackQuery", callback_query_id=cq_id)
+            return
+
+        key = data[2:]
+        if key == "auto":
+            chosen = "auto"
+        else:
+            choices = self._model_choices.get(chat_id) or []
+            try:
+                chosen = choices[int(key)]
+            except (ValueError, IndexError):
+                # the list moved on (a node went down) — redraw instead of
+                # silently setting the wrong model
+                await self.tg("answerCallbackQuery", callback_query_id=cq_id,
+                              text="список устарел, открываю заново")
+                text_, markup = await self.model_keyboard(chat_id)
+                if markup:
+                    await self.tg("sendMessage", chat_id=chat_id, text=text_, reply_markup=markup)
+                return
+
+        self.models[chat_id] = chosen
+        await self.tg("answerCallbackQuery", callback_query_id=cq_id,
+                      text=f"выбрано: {self.short_name(chosen)}")
+        await self.tg("editMessageText", chat_id=chat_id, message_id=msg.get("message_id"),
+                      text=f"✅ модель: {self.short_name(chosen)}")
+
     async def handle(self, update: dict) -> None:
         if self._duplicate(update.get("update_id", -1)):
+            return
+        if update.get("callback_query"):
+            await self.handle_callback(update["callback_query"])
             return
         msg = update.get("message") or {}
         chat_id = (msg.get("chat") or {}).get("id")
@@ -282,8 +361,16 @@ class TgBot:
                     self.modes[chat_id] = "smart"
                     await self.send(chat_id, "🛠 агентский режим: поиск и память включены")
                 elif cmd == "/model":
-                    self.models[chat_id] = arg.strip() or "auto"
-                    await self.send(chat_id, f"модель: {self.models[chat_id]}")
+                    if arg.strip():                       # explicit ref still works
+                        self.models[chat_id] = arg.strip()
+                        await self.send(chat_id, f"модель: {self.models[chat_id]}")
+                    else:                                  # no arg -> pick a button
+                        text_, markup = await self.model_keyboard(chat_id)
+                        if markup:
+                            await self.tg("sendMessage", chat_id=chat_id, text=text_,
+                                          reply_markup=markup)
+                        else:
+                            await self.send(chat_id, text_)
                 elif cmd == "/models":
                     await self.send(chat_id, await self.do_models())
                 elif cmd == "/net":
