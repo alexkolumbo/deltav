@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import httpx
 
@@ -41,6 +42,8 @@ class LlamaServerBackend(ComputeBackend):
         # On weak GPUs that burns the token budget before the answer, so we
         # DISABLE thinking by default (direct answers). DELTAV_THINK=1 opts in.
         self.think = (os.environ.get("DELTAV_THINK", "") == "1") if think is None else think
+        self._caps: dict | None = None
+        self._caps_at = 0.0
 
     @classmethod
     def is_available(cls) -> bool:
@@ -57,6 +60,37 @@ class LlamaServerBackend(ComputeBackend):
             return self.client.get(f"{self.base_url}/health", timeout=2.0).status_code == 200
         except httpx.HTTPError:
             return False
+
+    # Engine probes are cached: /health is polled by every router refresh and
+    # by the node's own health endpoint, and we do not want that traffic to
+    # multiply into the engine while it is busy generating.
+    CAP_TTL = 15.0
+
+    def capabilities(self) -> dict:
+        """Ask the engine what it is, instead of trusting the catalog.
+
+        `vision` comes from llama.cpp's /props modalities, which is true only
+        when the server was actually started with --mmproj. `ready` is false
+        while the engine is down or still loading its model — the node then
+        stops being a routing candidate rather than accepting jobs it will
+        fail. Probe failures mean 'not ready': a node that cannot reach its
+        own engine has no business claiming it can serve.
+        """
+        now = time.monotonic()
+        if self._caps is not None and now - self._caps_at < self.CAP_TTL:
+            return self._caps
+        caps = {"ready": False, "vision": False}
+        try:
+            if self.client.get(f"{self.base_url}/health", timeout=2.0).status_code == 200:
+                caps["ready"] = True
+                props = self.client.get(f"{self.base_url}/props", timeout=2.0)
+                if props.status_code == 200:
+                    modalities = props.json().get("modalities") or {}
+                    caps["vision"] = bool(modalities.get("vision"))
+        except (httpx.HTTPError, ValueError):
+            pass
+        self._caps, self._caps_at = caps, now
+        return caps
 
     def load(self, model_ref: str) -> None:
         """The server pre-loads its model at startup; nothing to do here."""

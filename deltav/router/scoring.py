@@ -24,6 +24,9 @@ class NodeView:
     alive: bool = True        # answered the last health poll
     price_per_token: int = 0  # udvt; 0 = network default
     dynamic: bool = True      # can the node cold-load models it didn't announce?
+    # Measured by the node against its own engine (health.engine). `None` =
+    # the node runs an older build and never reported: unknown, not false.
+    vision: bool | None = None
 
 W_MODEL_READY = 3.0   # node already announced/loaded the model — no cold start
 W_REPUTATION = 2.0

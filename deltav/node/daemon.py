@@ -226,8 +226,15 @@ class NodeDaemon:
 
         @app.get("/health")
         async def health() -> dict:
+            # Measured, not declared: a node whose engine died still answers
+            # this endpoint happily, and without `engine` the router would
+            # keep handing it jobs that can only 500. Probing is cached in
+            # the backend, so this stays cheap enough to poll.
+            caps = await asyncio.to_thread(self.backend.capabilities)
             return {
                 "address": self.address,
+                "engine": {"ready": bool(caps.get("ready", True)),
+                           "vision": bool(caps.get("vision", False))},
                 "chain_id": self.chain.genesis.params.chain_id,
                 "height": self.chain.height,
                 "head": self.chain.head.hash,

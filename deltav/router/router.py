@@ -12,6 +12,7 @@ with an INFERENCE_RECEIPT and nothing else.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,6 +28,22 @@ from .scoring import NodeView, score_node
 
 class RouteError(Exception):
     pass
+
+
+def _why(exc: Exception) -> str:
+    """The node already explains itself in the response body ('inference
+    failed: llama-server 503 ...'); httpx's str() throws that away and
+    offers an MDN link instead, which is useless to whoever is debugging a
+    node. Prefer the body, fall back to the exception."""
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        try:
+            detail = resp.json().get("detail")
+        except ValueError:
+            detail = (resp.text or "").strip()
+        if detail:
+            return f"{resp.status_code} {str(detail)[:200]}"
+    return str(exc).split("\n")[0]
 
 
 @dataclass
@@ -85,6 +102,12 @@ class SmartRouter:
         self.version = version
         self.nodes: list[NodeView] = []
         self.chain_height = 0
+        # address -> monotonic deadline. A node that just failed a job is
+        # benched even if its /health keeps answering 200: the daemon being
+        # up says nothing about the engine behind it, and older builds report
+        # no engine state at all. Without this, every refresh resurrects a
+        # broken node and clients loop through the same failure forever.
+        self._benched: dict[str, float] = {}
 
     # ------------------------------------------------------------ registry
     async def refresh(self, node_urls: list[str]) -> None:
@@ -116,11 +139,41 @@ class SmartRouter:
             try:
                 health = await self.client.get(f"{node.endpoint}/health", timeout=3.0)
                 health.raise_for_status()
-                node.load = float(health.json().get("load", 0.0))
-                node.alive = True
+                body = health.json()
+                node.load = float(body.get("load", 0.0))
+                # A 200 from the daemon says the daemon is up, not that its
+                # engine is. Nodes that report `engine` are taken at their
+                # word; older builds that report nothing stay alive, since
+                # absence of the field is not evidence of a dead engine.
+                engine = body.get("engine")
+                if isinstance(engine, dict):
+                    node.alive = bool(engine.get("ready", True))
+                    node.vision = bool(engine.get("vision", False))
+                else:
+                    node.alive = True
+                    node.vision = None
+                if self._is_benched(node.address):
+                    node.alive = False
             except httpx.HTTPError:
                 node.alive = False
         self.nodes = list(registry.values())
+
+    # Long enough that a broken node stops being offered to clients, short
+    # enough that a node fixed by its operator comes back on its own.
+    BENCH_SECONDS = 120.0
+
+    def _bench(self, node: NodeView) -> None:
+        node.alive = False
+        self._benched[node.address] = time.monotonic() + self.BENCH_SECONDS
+
+    def _is_benched(self, address: str) -> bool:
+        until = self._benched.get(address)
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            del self._benched[address]
+            return False
+        return True
 
     # ------------------------------------------------------------- resolve
     def _servable(self, spec: ModelSpec, node: NodeView) -> bool:
@@ -220,6 +273,12 @@ class SmartRouter:
     ) -> RouteResult:
         spec = self.resolve_model(model)
         candidates = self.rank_nodes(spec)
+        if images:
+            candidates = [n for n in candidates if n.vision is not False]
+            if not candidates:
+                raise RouteError(
+                    f"{spec.ref} is a vision model, but no node serving it has an "
+                    "engine with image input loaded (--mmproj)")
         if not candidates:
             raise RouteError(f"no node can serve {spec.ref}")
 
@@ -232,8 +291,8 @@ class SmartRouter:
                 resp.raise_for_status()
                 data = resp.json()
             except httpx.HTTPError as exc:
-                errors.append(f"{node.address[:12]}: {exc}")
-                node.alive = False  # local penalty; chain reputation moves via spot checks
+                errors.append(f"{node.address[:12]}: {_why(exc)}")
+                self._bench(node)  # local penalty; chain reputation moves via spot checks
                 continue
             return RouteResult(
                 text=data["text"],
@@ -277,7 +336,7 @@ class SmartRouter:
                 ) as resp:
                     if resp.status_code != 200:
                         errors.append(f"{node.address[:12]}: http {resp.status_code}")
-                        node.alive = False
+                        self._bench(node)
                         continue
                     async for line in resp.aiter_lines():
                         if not line.startswith("data: "):
@@ -303,8 +362,8 @@ class SmartRouter:
             except httpx.HTTPError as exc:
                 if pieces:
                     raise RouteError(f"stream broke mid-generation: {exc}") from exc
-                errors.append(f"{node.address[:12]}: {exc}")
-                node.alive = False
+                errors.append(f"{node.address[:12]}: {_why(exc)}")
+                self._bench(node)
                 continue
             raise RouteError("node stream ended without a final event")
         raise RouteError("all candidate nodes failed: " + "; ".join(errors))
@@ -360,8 +419,8 @@ class SmartRouter:
                 resp.raise_for_status()
                 data = resp.json()
             except httpx.HTTPError as exc:
-                errors.append(f"{node.address[:12]}: {exc}")
-                node.alive = False
+                errors.append(f"{node.address[:12]}: {_why(exc)}")
+                self._bench(node)
                 continue
             return EmbedRouteResult(
                 vectors=data["vectors"],
@@ -419,8 +478,8 @@ class SmartRouter:
                 resp.raise_for_status()
                 data = resp.json()
             except httpx.HTTPError as exc:
-                errors.append(f"{node.address[:12]}: {exc}")
-                node.alive = False
+                errors.append(f"{node.address[:12]}: {_why(exc)}")
+                self._bench(node)
                 continue
             return ImageRouteResult(images=data["images"], model_ref=spec.ref,
                                     node=node.address, receipt_tx=data.get("receipt_tx"),

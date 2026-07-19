@@ -121,12 +121,22 @@ async def two_node_net(genesis, alice, bob):
     client = httpx.AsyncClient(transport=transport)
     for d in daemons:
         await d.start()
-    deadline = asyncio.get_event_loop().time() + 8.0
+    # Wait for the two-node network to actually start producing, and SAY SO
+    # if it doesn't. This used to give up after 8s and continue silently, so
+    # a slow box surfaced as "the light client failed to verify headers"
+    # (height 2 >= 3) — an opaque assertion pointing at the wrong component.
+    # Block time is 50 ms; a deadline this generous only ever trips when the
+    # event loop is genuinely starved, and then the message says that.
+    heights: list[int] = []
+    deadline = asyncio.get_event_loop().time() + 60.0
     while asyncio.get_event_loop().time() < deadline:
         heights = [(await client.get(f"{u}/chain/head")).json()["height"] for u in urls]
         if all(h >= 3 for h in heights):
             break
         await asyncio.sleep(0.05)
+    else:
+        pytest.fail(f"the test network never reached height 3 in 60s (heights={heights}); "
+                    "the machine is too loaded to run a timing-dependent chain test")
     try:
         yield {"urls": urls, "client": client}
     finally:
@@ -140,8 +150,20 @@ async def test_light_client_verifies_live_network(two_node_net, genesis):
     verdict = await lc.verify_headers()
     assert verdict.ok and verdict.height >= 3
 
-    head_hash, height, votes = await lc.quorum_head()
-    assert votes == 2  # both nodes agree on the head
+    # Agreement on the head is EVENTUAL, not instantaneous: blocks land every
+    # 50 ms, so a single poll can catch one node a block ahead of the other
+    # and see a 1-1 split that is not a fault. (This assertion was flaky for
+    # exactly that reason — it failed roughly once in three on a loaded box,
+    # in both directions, independent of the code under test.) Give the two
+    # nodes a moment to converge and require that they do.
+    votes = 0
+    deadline = asyncio.get_event_loop().time() + 5.0
+    while asyncio.get_event_loop().time() < deadline:
+        head_hash, height, votes = await lc.quorum_head()
+        if votes == 2:
+            break
+        await asyncio.sleep(0.05)
+    assert votes == 2, "the two nodes never converged on a common head"
 
 
 async def test_quorum_ignores_a_lying_node(two_node_net, genesis):

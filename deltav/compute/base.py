@@ -153,6 +153,20 @@ class ComputeBackend(ABC):
         stable-diffusion.cpp; report supports_image_gen=True."""
         raise NotImplementedError(f"backend {self.name} does not generate images")
 
+    def capabilities(self) -> dict:
+        """What this backend can ACTUALLY do right now, measured rather than
+        declared.
+
+        The class attributes above are a promise made by whoever wrote the
+        backend; this is the state of the engine on THIS machine at THIS
+        moment. They diverge in ways that break the network: an engine
+        started without --mmproj serves a model the catalog calls
+        vision-capable, and a crashed engine sits behind a node whose own
+        /health is a cheerful 200. Both make the router send work that can
+        only fail. Backends that can interrogate their engine should override.
+        """
+        return {"ready": True, "vision": bool(self.supports_vision)}
+
     def unload(self, model_ref: str | None = None) -> None:  # noqa: B027 - optional hook
         """Free memory; default no-op."""
 

@@ -433,14 +433,21 @@ class GatewayDaemon:
             await self.router.refresh(self.node_urls)
             data = []
             for spec in sorted(self.catalog.specs, key=lambda s: -s.quality):
-                servers = [n.address for n in self.router.nodes if self.router._servable(spec, n) and n.alive]
+                serving = [n for n in self.router.nodes
+                           if self.router._servable(spec, n) and n.alive]
+                servers = [n.address for n in serving]
+                # The catalog says the WEIGHTS can see; whether any live node
+                # actually loaded an image projector is a different question,
+                # and clients draw a 👁 from this field. Report the promise
+                # only where some node backs it (or is too old to say).
+                vision = spec.vision and any(n.vision is not False for n in serving)
                 data.append({
                     "id": spec.ref,
                     "object": "model",
                     "owned_by": "deltav",
                     "deltav": {
                         "family": spec.family, "params_b": spec.params_b, "quant": spec.quant,
-                        "kind": spec.kind, "vision": spec.vision,
+                        "kind": spec.kind, "vision": vision,
                         "vram_needed_mb": estimate_vram_mb(spec), "quality": spec.quality,
                         "served_by": servers,
                     },
