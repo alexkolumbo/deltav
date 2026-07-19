@@ -35,6 +35,12 @@ SMART_CONTEXT_MSGS = 4
 SMART_CONTEXT_CHARS = 500
 
 
+class AgentFailed(Exception):
+    """The network could not answer. Distinct from an answer ON PURPOSE: when
+    failures were returned as ordinary strings they got stored as assistant
+    turns and poisoned the next turn's context."""
+
+
 class TgBot:
     def __init__(self, token: str, gateway: str, allow: set[int] | None = None,
                  client: httpx.AsyncClient | None = None, api_key: str = ""):
@@ -148,6 +154,8 @@ class TgBot:
         return answer + f"\n\n·  👁 {data.get('model','?').split('/')[-1].split('::')[0]} · чек {str(meta.get('receipt_tx'))[:8]}"
 
     async def do_agent(self, chat_id: int, task: str) -> str:
+        """Raises AgentFailed if the network could not answer. Callers must
+        NOT treat a failure as an answer — see do_smart."""
         resp = await self.client.post(f"{self.gateway}/v1/agents/run", headers=self.gw_headers, json={
             "task": task,
             "model": self.models.get(chat_id, "auto"),
@@ -155,7 +163,7 @@ class TgBot:
             "session_id": f"tg-{chat_id}",
         })
         if resp.status_code != 200:
-            return f"⚠ агент: {resp.json().get('detail', resp.status_code)}"
+            raise AgentFailed(str(resp.json().get("detail", resp.status_code)))
         data = resp.json()
         lines = []
         for s in data.get("steps", []):
@@ -175,7 +183,14 @@ class TgBot:
             f"{m['role']}: {m['content'][:SMART_CONTEXT_CHARS]}" for m in recent)
         task = (f"Контекст диалога:\n{context}\n\nСообщение пользователя: {text}"
                 if context else text)
-        answer = await self.do_agent(chat_id, task)
+        # A failure must never enter the history. It used to: the error string
+        # was appended as an assistant turn, so it became "Контекст диалога"
+        # for the next message — a user typed "Привет" and the model politely
+        # explained HTTP 500, because that is what the context was about.
+        try:
+            answer = await self.do_agent(chat_id, task)
+        except AgentFailed as exc:
+            return f"⚠ агент: {exc}"
         history.append({"role": "user", "content": text})
         history.append({"role": "assistant", "content": answer.split("\n\n·")[0][:1500]})
         return answer
@@ -385,7 +400,10 @@ class TgBot:
                         await self.send(chat_id, "формат: /agent <задача>")
                         return
                     await self.tg("sendChatAction", chat_id=chat_id, action="typing")
-                    await self.send(chat_id, await self.do_agent(chat_id, arg.strip()))
+                    try:
+                        await self.send(chat_id, await self.do_agent(chat_id, arg.strip()))
+                    except AgentFailed as exc:
+                        await self.send(chat_id, f"⚠ агент: {exc}")
                 else:
                     await self.tg("sendChatAction", chat_id=chat_id, action="typing")
                     if self.modes.get(chat_id, "smart") == "fast":

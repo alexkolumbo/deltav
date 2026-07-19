@@ -56,6 +56,54 @@ async def test_served_models_hides_what_no_node_serves():
     assert models[0][1] == 2 and models[0][2] is True
 
 
+async def test_a_network_failure_never_enters_the_dialog_history():
+    """Live bug: the agent failed, its error string was stored as an assistant
+    turn, and the NEXT message shipped it back as "Контекст диалога". A user
+    typed "Привет" and got a lecture on HTTP 500 — the model was answering the
+    error, because that is what the conversation now looked like."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/v1/agents/run" in str(request.url):
+            return httpx.Response(500, json={"detail": "all candidate nodes failed: 500"})
+        if "api.telegram.org" in str(request.url):
+            return httpx.Response(200, json={"ok": True, "result": {}})
+        return httpx.Response(404)
+
+    bot = TgBot(token="T", gateway=GW,
+                client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    reply = await bot.do_smart(chat_id=7, text="Привет")
+    assert reply.startswith("⚠")            # the user is told, plainly
+    assert bot.history(7) == []             # ...and nothing is remembered
+
+
+async def test_the_failed_turn_does_not_leak_into_the_next_request():
+    """The fast and smart modes share one history, which is how the poisoned
+    turn reached a plain /v1/chat/completions call in the first place."""
+    sent_bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "/v1/agents/run" in url:
+            return httpx.Response(503, json={"detail": "no live nodes on the network"})
+        if "/v1/chat/completions" in url:
+            sent_bodies.append(json.loads(request.content))
+            return httpx.Response(200, json={
+                "choices": [{"message": {"content": "Привет!"}}],
+                "model": "m::m.gguf", "usage": {"completion_tokens": 3}, "deltav": {}})
+        return httpx.Response(404)
+
+    bot = TgBot(token="T", gateway=GW,
+                client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    await bot.do_smart(chat_id=7, text="Привет")        # fails
+    await bot.do_chat(chat_id=7, text="Привет")         # then the fast path
+    sent = json.dumps(sent_bodies[-1], ensure_ascii=False)
+    # Assert on what actually leaked: the error detail the mock returned, and
+    # the ⚠ marker every failure string carries. (An earlier version of this
+    # test checked for substrings the mock never produced, so it passed
+    # against the buggy code — a test that proves nothing.)
+    assert "no live nodes" not in sent
+    assert "⚠" not in sent
+
+
 async def test_served_models_offers_only_chat_models():
     """The seed serves an embedding model too (and a node may serve an image
     one). Picking either for a chat fails on every single message."""
