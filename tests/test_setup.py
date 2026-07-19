@@ -391,3 +391,80 @@ def test_connect_network_unreachable_is_graceful(tmp_path):
     wiz = SetupWizard(home=tmp_path, seed="http://dead:9100", client=client)
     wiz.connect_network(8)  # must not raise
     assert wiz.state["genesis"] == ""
+
+
+# ------------------------------------------------- relay attach verification
+
+SEED_VIA = "http://relay.test:9200/via/dv1seed"
+
+
+def _wiz_with_relay(tmp_path, handler, **kw):
+    wiz = SetupWizard(home=tmp_path, lang="ru",
+                      client=httpx.Client(transport=httpx.MockTransport(handler)), **kw)
+    wiz.state["seed"] = SEED_VIA
+    wiz.state["address"] = "dv1mynode"
+    return wiz
+
+
+def test_relay_attach_is_confirmed_against_the_public_url(tmp_path):
+    """Local /health only proves the daemon is up on THIS machine."""
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"address": "dv1mynode"})
+
+    wiz = _wiz_with_relay(tmp_path, handler)
+    assert wiz.verify_relay() is True
+    assert seen == ["http://relay.test:9200/via/dv1mynode/health"]
+    assert wiz.state["public_url"] == "http://relay.test:9200/via/dv1mynode"
+
+
+def test_a_node_that_never_reaches_the_relay_is_reported_not_assumed(tmp_path):
+    """The silent case this closes: the node ran, the wizard said "live and on
+    the network", and the operator learned otherwise from a dashboard."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404)
+
+    wiz = _wiz_with_relay(tmp_path, handler)
+    wiz.RELAY_PROBE_SECONDS = 0.01           # don't wait 90s in a test
+    warnings = []
+    wiz.warn = lambda msg: warnings.append(msg)
+    assert wiz.verify_relay() is False
+    assert warnings and "релее" in warnings[0]
+
+
+def test_a_lan_only_setup_warns_that_it_will_earn_nothing(tmp_path):
+    """A non-…/via seed yields no relay at all. That used to be silent, so a
+    LAN-only node looked exactly like a working one."""
+    wiz = SetupWizard(home=tmp_path, lang="ru")
+    wiz.state["seed"] = "http://10.0.0.223:9100"     # LAN seed -> nothing to derive
+    wiz.state["address"] = "dv1mynode"
+    warnings = []
+    wiz.warn = lambda msg: warnings.append(msg)
+    assert wiz.verify_relay() is False
+    assert warnings and "локальной сети" in warnings[0]
+
+
+def test_prepare_only_run_does_not_wait_on_a_node_it_never_started(tmp_path):
+    """--no-start (and the ports-busy bail-out) start nothing; probing there
+    would just hang for 90 seconds."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(404)
+
+    wiz = _wiz_with_relay(tmp_path, handler)
+    wiz._finish(tmp_path / "start-node.bat")          # started=False by default
+    assert calls == []
+
+
+def test_the_check_is_actually_wired_into_the_started_path(tmp_path):
+    """Testing verify_relay directly proves the probe works, not that anything
+    calls it. This is the wiring."""
+    wiz = SetupWizard(home=tmp_path, lang="ru")
+    called = []
+    wiz.verify_relay = lambda: called.append(True)
+    wiz._finish(tmp_path / "start-node.bat", started=True)
+    assert called == [True]

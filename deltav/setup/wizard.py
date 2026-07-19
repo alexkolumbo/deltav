@@ -738,7 +738,7 @@ class SetupWizard:
                                      end=schedule.window.end))
                 if s.get("server"):
                     self.note(self.t("engine_session"))
-                self._finish(script)
+                self._finish(script, started=True)
                 return
             self.warn(self.t("autostart_fail"))
             # fall through to a direct one-off start
@@ -759,7 +759,7 @@ class SetupWizard:
             env=env)
         if not self._wait_health("http://127.0.0.1:9100/health", 60):
             self.warn(self.t("node_slow"))
-        self._finish(script)
+        self._finish(script, started=True)
 
     def _install_autostart(self, launcher: Path, stopper: Path, schedule) -> bool:
         """Register the OS scheduler so the node auto-starts (and, for a
@@ -809,7 +809,48 @@ class SetupWizard:
             time.sleep(2)
         return False
 
-    def _finish(self, script: Path) -> None:
+    # How long to give the relay attach before calling it out. The node
+    # registers on-chain first and only then publishes itself on the relay,
+    # so a fresh node needs a moment.
+    RELAY_PROBE_SECONDS = 90
+
+    def verify_relay(self) -> bool:
+        """Confirm the node is reachable FROM OUTSIDE, not just locally.
+
+        Attaching to the relay was always attempted but never checked, so a
+        node that silently stayed LAN-only looked identical to a healthy one:
+        local /health answered, the wizard said "live and on the network", and
+        the operator only found out via a dashboard saying offline. Whatever
+        this returns, say it plainly."""
+        relay, addr = self._relay_base(), self.state.get("address", "")
+        if not relay:
+            self.warn(self.t("relay_none"))
+            return False
+        if not addr:
+            return False
+        url = f"{relay}/via/{addr}"
+        self.note(self.t("relay_wait"))
+        deadline = time.time() + self.RELAY_PROBE_SECONDS
+        while time.time() < deadline:
+            try:
+                if self.client.get(f"{url}/health", timeout=5.0).status_code == 200:
+                    self.state["public_url"] = url
+                    self._save_state()
+                    self.ok(self.t("relay_ok"))
+                    say(f"    {url}")
+                    return True
+            except httpx.HTTPError:
+                pass
+            time.sleep(3.0)
+        self.warn(self.t("relay_slow", url=url))
+        return False
+
+    def _finish(self, script: Path, started: bool = False) -> None:
+        # Only probe when we actually started something — after "ports busy"
+        # or a prepare-only run there is nothing to be reachable yet, and a
+        # 90-second wait for a node that isn't running is just a hang.
+        if started:
+            self.verify_relay()
         say()
         say(f"{C_OK}╔══════════════════════════════════════════╗{C_RESET}")
         say(f"{C_OK}║   {self.t('done_title')}{C_RESET}")

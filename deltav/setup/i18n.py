@@ -151,6 +151,23 @@ M: dict[str, dict[str, str]] = {
     "node_slow":    {"en": "Node is taking longer than usual — check the explorer in a minute.",
                      "ru": "Нода запускается дольше обычного — проверьте эксплорер через минуту."},
 
+    "relay_wait":   {"en": "Checking the node is reachable from outside…",
+                     "ru": "Проверяю, что нода видна снаружи…"},
+    "relay_ok":     {"en": "Reachable from the internet — the network can send it work:",
+                     "ru": "Нода доступна из интернета — сеть может слать ей запросы:"},
+    "relay_slow":   {"en": ("The node is running, but it has not appeared on the relay yet. "
+                            "It often attaches a minute later; if it never does, the node stays "
+                            "LAN-only and the dashboard will show it offline. Check: {url}/health"),
+                     "ru": ("Нода работает, но на релее пока не появилась. Часто цепляется через "
+                            "минуту; если так и не появится — она останется только в локальной "
+                            "сети, и дашборд будет показывать её офлайн. Проверить: {url}/health")},
+    "relay_none":   {"en": ("No relay could be derived, so this node is LAN-ONLY: other nodes "
+                            "cannot reach it and it will earn nothing. Re-run with a public "
+                            "…/via/<id> seed, or pass --relay <url>."),
+                     "ru": ("Релей вывести не из чего — нода останется ТОЛЬКО в локальной сети: "
+                            "другие узлы её не увидят и заработка не будет. Перезапустите с "
+                            "публичным …/via/<id> сидом или передайте --relay <url>.")},
+
     "done_title":   {"en": "Your node is live and on the network! 🎉",
                      "ru": "Нода запущена и в сети! 🎉"},
     "done_panel":   {"en": "Node dashboard (open in a browser):",
