@@ -1,7 +1,13 @@
 # Delta V node - one-line installer for Windows.
 #   irm https://raw.githubusercontent.com/alexkolumbo/deltav/main/install.ps1 | iex
 # Finds a real Python, installs Delta V, and launches the friendly wizard.
+#
+# NOTE for anyone editing this file: under `| iex` every line here runs in the
+# USER's own session. So `exit` closes their window, and preference variables
+# set here outlive the install. Keep both scoped.
+$script:DvOldEAP = $ErrorActionPreference
 $ErrorActionPreference = "Stop"
+trap { $ErrorActionPreference = $script:DvOldEAP; break }
 Write-Host "DV  Delta V - установка ноды`n"
 
 # 1. Find a REAL Python 3.11+.
@@ -41,7 +47,13 @@ if (-not (Resolve-Python)) {
     Write-Host "  winget install -e --id Python.Python.3.12"
     Write-Host "  # затем закройте и откройте PowerShell заново"
     Write-Host "или скачайте с https://www.python.org/downloads/ (отметьте 'Add python.exe to PATH')."
-    exit 1
+    # `return`, NEVER `exit`: this script is run as `irm ... | iex`, so it
+    # executes in the CALLER's session scope and `exit` terminates the whole
+    # PowerShell host. The window vanishes instantly, taking the message above
+    # with it — which reads to the user as "the wizard crashed PowerShell"
+    # rather than "install Python first". `return` ends the script only.
+    $ErrorActionPreference = $script:DvOldEAP
+    return
 }
 Write-Host ("Python: " + ((@($script:PyExe) + $script:PyPre) -join " "))
 
@@ -61,3 +73,4 @@ if ((Test-Path "pyproject.toml") -and (Select-String -Path "pyproject.toml" -Pat
 # 3. Wizard.
 Write-Host ""
 Invoke-Py -m deltav.cli setup @args
+$ErrorActionPreference = $script:DvOldEAP
